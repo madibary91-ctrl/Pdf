@@ -1,0 +1,3151 @@
+From fb6e77a554e7353b499a309cd84aefd8ab6d7d34 Mon Sep 17 00:00:00 2001
+From: "Claude (Sonnet)" <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 18:59:56 +0000
+Subject: [PATCH] feat(legal-kb-schema): knowledge-base schema, strict loader
+ and temporal lookup (step 4a)
+
+- new pure module legal-kb-schema (depends only on shared-types): documents, articles,
+  half-open [validFrom, validTo) versions, relations, rulings, provenance/review
+- loadCorpus: strict unknown->Corpus validation with exact paths, canonical + idempotent output
+- resolveCitation / versionsInForceAt: explicit temporal lookup (found, gap, not-yet, no-longer, unknown-*)
+- fictional sample corpus only; no real legal data
+- /kb-schema workbench; ADR-0003; task 0006; handoff 0005; mutation script
+- 89 new tests (378 total + 16 todo); fuzz found+fixed sparse-array bug
+---
+ docs/adr/0003-legal-kb-schema.md             |  29 ++
+ docs/glossary.md                             |   7 +
+ docs/handoffs/0005-legal-kb-schema.md        |  71 +++
+ docs/known-pitfalls.md                       |   6 +
+ docs/tasks/0006-legal-kb-schema.md           |  55 ++
+ src/app/_components/site-nav.tsx             |   1 +
+ src/app/kb-schema/page.tsx                   |  18 +
+ src/app/kb-schema/workbench.tsx              | 299 +++++++++++
+ src/app/page.tsx                             |   6 +-
+ src/modules/legal-kb-schema/README.md        |  48 ++
+ src/modules/legal-kb-schema/dates.ts         |  44 ++
+ src/modules/legal-kb-schema/index.ts         |  42 ++
+ src/modules/legal-kb-schema/integrity.ts     | 104 ++++
+ src/modules/legal-kb-schema/issues.ts        |  38 ++
+ src/modules/legal-kb-schema/label.test.ts    | 235 +++++++++
+ src/modules/legal-kb-schema/label.ts         | 180 +++++++
+ src/modules/legal-kb-schema/load.test.ts     | 508 +++++++++++++++++++
+ src/modules/legal-kb-schema/load.ts          |  59 +++
+ src/modules/legal-kb-schema/lookup.test.ts   | 281 ++++++++++
+ src/modules/legal-kb-schema/lookup.ts        | 148 ++++++
+ src/modules/legal-kb-schema/parse.ts         | 192 +++++++
+ src/modules/legal-kb-schema/reader.ts        | 166 ++++++
+ src/modules/legal-kb-schema/sample-corpus.ts | 138 +++++
+ src/modules/legal-kb-schema/types.ts         | 183 +++++++
+ tooling/mutation/legal-kb-schema.py          |  57 +++
+ 25 files changed, 2914 insertions(+), 1 deletion(-)
+ create mode 100644 docs/adr/0003-legal-kb-schema.md
+ create mode 100644 docs/handoffs/0005-legal-kb-schema.md
+ create mode 100644 docs/tasks/0006-legal-kb-schema.md
+ create mode 100644 src/app/kb-schema/page.tsx
+ create mode 100644 src/app/kb-schema/workbench.tsx
+ create mode 100644 src/modules/legal-kb-schema/README.md
+ create mode 100644 src/modules/legal-kb-schema/dates.ts
+ create mode 100644 src/modules/legal-kb-schema/index.ts
+ create mode 100644 src/modules/legal-kb-schema/integrity.ts
+ create mode 100644 src/modules/legal-kb-schema/issues.ts
+ create mode 100644 src/modules/legal-kb-schema/label.test.ts
+ create mode 100644 src/modules/legal-kb-schema/label.ts
+ create mode 100644 src/modules/legal-kb-schema/load.test.ts
+ create mode 100644 src/modules/legal-kb-schema/load.ts
+ create mode 100644 src/modules/legal-kb-schema/lookup.test.ts
+ create mode 100644 src/modules/legal-kb-schema/lookup.ts
+ create mode 100644 src/modules/legal-kb-schema/parse.ts
+ create mode 100644 src/modules/legal-kb-schema/reader.ts
+ create mode 100644 src/modules/legal-kb-schema/sample-corpus.ts
+ create mode 100644 src/modules/legal-kb-schema/types.ts
+ create mode 100644 tooling/mutation/legal-kb-schema.py
+
+diff --git a/docs/adr/0003-legal-kb-schema.md b/docs/adr/0003-legal-kb-schema.md
+new file mode 100644
+index 0000000..81e5e61
+--- /dev/null
++++ b/docs/adr/0003-legal-kb-schema.md
+@@ -0,0 +1,29 @@
++# ADR-0003: تصمیم‌های طراحی شمای پایگاه دانش (legal-kb-schema)
++
++**وضعیت:** پیشنهادی — منتظر تأیید مالک معماری و حقوقدان · **گام ۴، بخش الف**
++
++## تصمیم‌ها
++
++1. **تاریخ‌ها فقط میلادیِ ISO (`YYYY-MM-DD`) و رشته‌ای‌اند.** مقایسهٔ رشته‌ای صفرپُرشده = مقایسهٔ زمانی؛ JSON‌پذیر؛ بدون ساعت/منطقهٔ زمانی. تبدیل از/به جلالی کار مرز (ingest/رابط) است.
++   *چرا نه جلالی هم‌زمان:* ذخیرهٔ دو نمایش = امکان ناسازگاری. نمایش جلالی از ISO محاسبه می‌شود (میز آزمایش همین کار را می‌کند). سال‌های خارج از ۱۸۰۰–۲۲۰۰ رد می‌شوند؛ این نگهبان فنی، تاریخ جلالی (مثلاً `1403-01-01`) را که به‌اشتباه به‌جای میلادی داده شود می‌گیرد.
++   *پیامد:* این ماژول طبق registry به `jalali-date` وابسته نیست، پس خودش اعتبار میلادی را می‌سنجد (کبیسه‌های ۴/۱۰۰/۴۰۰، حدود ماه).
++2. **بازهٔ اعتبار نیم‌باز `[validFrom, validTo)`** و `validTo` = نخستین روزی که دیگر معتبر نیست (= `validFrom` نسخهٔ بعد). نسخهٔ چسبیده بدون شکاف است؛ شکاف مجاز و صریح؛ هم‌پوشانی خطا. `validTo` **باید صریحاً** بیاید (`null` = بی‌پایان) تا «فراموشی» به «هنوز معتبر» تبدیل نشود.
++   *پرسش حقوقدان:* برای «لازم‌الاجرا از تاریخ X» روز X را شروع بگذاریم؟ و برای نسخ، روز نسخ نخستین روزِ نامعتبر است؟ (داده تعیین می‌کند؛ ماژول قاعده‌ای از خودش ندارد.)
++3. **شناسهٔ ماده و نسخه ورودی نیست، محاسبه می‌شود:** ماده = `سند + برچسب متعارف`؛ نسخه = `ماده + validFrom`. پس شناسهٔ ناسازگار یا تکراریِ پنهان (`۱۰` و `10`) نمی‌تواند وجود داشته باشد.
++4. **برچسب ماده فهرست بسته دارد:** `N`، `N مکرر`، `N مکرر k` (k≥۲، امکان فنی)، `واحده`. ارقام فارسی/عربی/لاتین، ی/ک عربی و نیم‌فاصله نرمال می‌شوند. هر چیز دیگر خطای صریح است (حدس نمی‌زنیم). کلید ASCII (`10-bis-2`) برای ذخیره/نشانی.
++5. **نرمال‌سازی ارقام و حروف در خود ماژول است** (کپی کوچک و تست‌شده)، چون registry وابستگی به `persian-text` نداده است. اگر مالک معماری ترجیح می‌دهد وابستگی اعلام شود، جایگزینی یک تابع است.
++6. **ورود داده فقط از `loadCorpus(unknown)`** که سخت‌گیر است: کلید ناشناخته = خطا (غلط املایی `validTO` نباید بی‌صدا پذیرفته شود)، نویسهٔ کنترلی و علامت‌های جهت‌دهی Trojan-Source ممنوع (متن بعداً به مدل زبانی و رابط می‌رسد)، `http(s)` تنها نشانی مجاز، سقف‌های فنی. خروجی متعارف و **خودتوان** است (`loadCorpus(خروجی) = خروجی`).
++7. **بازبینی در داده است:** هر منبع `sourceKind` (رسمی/ثانویه) و `review` دارد؛ پیش‌فرض «تأییدنشده»؛ «تأییدشده» بدون نام و تاریخ بازبین نامعتبر؛ `resolveCitation` برای هر نسخه `verified` می‌دهد. مصرف‌کننده‌ها (citation-verifier) تصمیم می‌گیرند تأییدنشده‌ها را نشان ندهند.
++8. **نتیجهٔ جست‌وجو اتحاد تفکیکی (union) بسته است،** نه `null`: «سند نیست»، «ماده نیست»، «بخش نیست»، «هنوز وضع نشده»، «دیگر معتبر نیست»، «شکاف»، «یافت‌شد». `Result` فقط برای ورودیِ بد (تاریخ/ارجاع نامعتبر) است. کدهای `DomainErrorCode` دست‌نخورده ماندند.
++9. **خطای اعتبارسنجی فهرست است:** `Result<Corpus, readonly CorpusIssue[]>` با کدهای مسئلهٔ بستهٔ خودِ ماژول (`INVALID_FIELD`، `MISSING_FIELD`، `UNKNOWN_FIELD`، `DUPLICATE`، `DANGLING_REF`، `INVALID_INTERVAL`، `VERSION_OVERLAP`، `REVIEW_INCONSISTENT`، `CONTRADICTORY_RELATION`، `LIMIT_EXCEEDED`)؛ حداکثر ۱۰۰ مسئله. بررسی یکپارچگی بین‌رکوردی فقط وقتی اجرا می‌شود که شکل بی‌خطا باشد (کم‌کردن نویز).
++10. **فهرست‌های بسته:** نوع سند (۵)، نوع رأی (۴)، نوع رابطه (۶). افزودن عضو = تغییر آگاهانهٔ شما، نه ورودی ingest.
++
++## جایگزین‌های ردشده
++- **zod/valibot برای اعتبارسنجی:** وابستگی جدید؛ نیاز اینجا کوچک است و پیام‌های فارسی/مسیر دقیق می‌خواهیم (قاعدهٔ ۸: پیش‌فرض اضافه نکنید).
++- **ذخیرهٔ `id` ماده در ورودی:** امکان ناسازگاری با برچسب.
++- **بازهٔ بسته `[from, to]`:** «روز آخر» با «روز نسخ» اشتباه می‌شود و نسخهٔ چسبیده نیاز به «روز قبل» دارد.
++- **تاریخ `Date`/epoch:** وابسته به منطقهٔ زمانی و ساعت؛ برای ماژول خالص نامناسب.
++
++## پیامدها
++- بخش‌های بعدی (store/ingest) باید همین `Corpus` را مبنا بگیرند؛ store باید «بازهٔ نیم‌باز» را در ستون‌ها/قید یکتایی حفظ کند.
++- ingest به تبدیل جلالی→میلادی نیاز دارد؛ طبق registry فعلی `legal-kb-ingest` به `jalali-date` وابسته نیست → **درخواست تغییر معماری** برای بخش ۴ج (یادداشت تحویل ۰۰۰۵).
+diff --git a/docs/glossary.md b/docs/glossary.md
+index 3cc9141..924f395 100644
+--- a/docs/glossary.md
++++ b/docs/glossary.md
+@@ -26,3 +26,10 @@
+ | **قائم‌مقام** | نوه‌ای که در نبود فرزند بی‌واسطه، جای فرزندِ فوت‌شده را می‌گیرد |
+ | **ترکهٔ خالص** | ماترک پس از کفن، دیون و وصیت نافذ؛ ورودی موتور ارث |
+ 
++| **پایگاه دانش (KB)** | مجموعهٔ اسناد حقوقی، مواد و نسخه‌های زمانی، رابطه‌ها و رأی‌ها (`Corpus`) |
++| **نسخهٔ زمانی** | متن یک ماده با بازهٔ اعتبار نیم‌باز `[validFrom, validTo)`؛ اعتبار با تاریخ سنجیده می‌شود |
++| **شکاف اعتبار** | بازه‌ای که هیچ نسخه‌ای از ماده معتبر نیست (مثلاً میان نسخ و وضع مجدد)؛ جست‌وجو آن را صریح اعلام می‌کند |
++| **برچسب متعارف ماده** | شکل یکتا برای ماده: `10`، `10 مکرر`، `10 مکرر 2`، `واحده` (ارقام لاتین) |
++| **کلید ارجاع** | رشتهٔ ASCII پایدار برای ارجاع: `سند/ماده[/note|clause/برچسب]` مثل `sample-law/10-bis/note/2` |
++| **تأییدشده (verified)** | نسخه‌ای که حقوقدان با نام و تاریخ تأیید کرده؛ فقط همین‌ها قابل استناد به کاربرند |
++| **نمونهٔ ساختگی** | داده‌ی آزمایشی بدون ارزش حقوقی (`FICTIONAL_SAMPLE_CORPUS`)؛ هرگز جای قانون واقعی نمی‌نشیند |
+diff --git a/docs/handoffs/0005-legal-kb-schema.md b/docs/handoffs/0005-legal-kb-schema.md
+new file mode 100644
+index 0000000..6a4c2aa
+--- /dev/null
++++ b/docs/handoffs/0005-legal-kb-schema.md
+@@ -0,0 +1,71 @@
++# یادداشت تحویل ۰۰۰۵ — legal-kb-schema: شمای پایگاه دانش قانون (گام ۴، بخش الف از ۳)
++
++## چه شد
++- ماژول تازهٔ `src/modules/legal-kb-schema` (لایهٔ ۲، خالص، وابسته فقط به `shared-types`؛ همان رکورد `registry.ts` که از قبل «planned» بود):
++  - **مدل:** سند ← ماده ← نسخهٔ زمانی (با تبصره/بند)، رابطه (اصلاح/نسخ/جایگزینی/ارجاع/اجرا/تفسیر)، رأی (وحدت رویه، نظر شورای نگهبان، نظریهٔ مشورتی، رأی دادگاه)، منبع و وضعیت بازبینی در هر رکورد.
++  - **`loadCorpus` / `loadCorpusFromJson`:** تنها دروازهٔ ورود داده؛ ورودی `unknown` ← `Corpus` متعارف و خودتوان یا **فهرست کامل مسائل** با مسیر دقیق و پیام فارسی (حداکثر ۱۰۰). هرگز پرتاب نمی‌کند.
++  - **نسخه‌بندی زمانی:** بازهٔ نیم‌باز `[validFrom, validTo)`؛ `resolveCitation` نتیجهٔ صریح می‌دهد (`found`، `unknown-document|article|subpart`، `not-yet-in-force`، `no-longer-in-force`، `gap`) به‌همراه `verified`؛ `versionsInForceAt` برای فیلتر تاریخ بازیابی (گام ۶)؛ `relationsFor`، `rulingsCiting`.
++  - **برچسب ماده و کلید ارجاع:** `۱۰ مکرر` ≡ `10 مکرر`؛ `ماده واحده`؛ کلید ASCII پایدار (`doc/10-bis/note/2`) برای `citation-verifier` و store.
++  - **`FICTIONAL_SAMPLE_CORPUS`:** نمونهٔ **کاملاً ساختگی** (سه سند، شکاف اعتبار، نسخ، مکرر، واحده، تبصره/بند، رابطه، رأی). هیچ قانون یا ماده‌ی واقعی در مخزن نیامده.
++- میز آزمایش `/kb-schema`: ویرایش JSON با اعتبارسنجی زنده، فهرست مسائل، جست‌وجوی «کدام متن در این تاریخ (جلالی) معتبر بود؟»، فهرست مواد معتبر در تاریخ، رابطه‌ها و رأی‌ها، نشان «تأییدنشده — قابل استناد نیست». لینک در ناوبری و صفحهٔ اصلی.
++- مستندات: `docs/tasks/0006`، `docs/adr/0003` (۱۰ تصمیم و جایگزین‌های ردشده)، README ماژول، واژه‌نامه، `known-pitfalls` (۶ ردیف تازه).
++- **تست:** ۲۸۹ تست قبلی دست‌نخورده؛ **۸۹ تست تازه**؛ جمع **۳۷۸ سبز + ۱۶ `todo`**. `tsc`، `eslint`، `npm run build` سبز؛ صفحه با `next start` بالا آمد و HTML آن (شکاف اعتبار در تاریخ پیش‌فرض) بررسی شد.
++
++## چرا این ماژول (و چرا نه ادامهٔ legal-calc)
++هر چهار کار باقی‌ماندهٔ گام ۳ به ورودی حقوقدان وابسته‌اند: طبقهٔ دوم ارث (سؤال‌های ۳ و ۶ یادداشت ۰۰۰۴ باز است)، حق‌الوکاله (متن رسمی تعرفه)، دیه و مهریه (جدول رسمی). ساختنشان یعنی حدس یا عددسازی از حافظه که `AGENTS.md` ممنوع کرده. گام ۴ نقشهٔ راه (`registry.ts`) پایگاه دانش است و `legal-kb-schema` تنها قطعه‌ای است که **نه عدد می‌خواهد نه متن قانون** و همه‌ی قطعه‌های بعدی (store، ingest، retrieval، citation-verifier، گام ۶) روی آن بنا می‌شوند.
++
++## تقسیم گام ۴ (برای حفظ کیفیت)
++| بخش | محتوا | وضعیت |
++|---|---|---|
++| ۴الف | `legal-kb-schema` | ✅ همین تحویل |
++| ۴ب | `legal-kb-store`: PostgreSQL + drizzle، بازهٔ نیم‌باز در پایگاه، جست‌وجوی کلمه‌ای | بعدی (مهاجرت پایگاه داده = ناحیهٔ پرریسک) |
++| ۴ج | `legal-kb-ingest`: یک قانون کوچک از منبع رسمی | **منتظر پاسخ شما** (پایین) |
++
++## تصمیم‌ها (جزئیات: ADR-0003)
++- **فقط میلادی ISO در مدل** (و رشته‌ای). جلالی در مرز تبدیل می‌شود (میز آزمایش با `jalali-date`). سال خارج از ۱۸۰۰–۲۲۰۰ رد می‌شود تا تاریخ جلالیِ اشتباهی بی‌خطا ذخیره نشود.
++- **`validTo` و `effectiveFrom` باید صریح بیایند** (`null` مجاز، غیبت خطا): «فراموشی» نباید «هنوز معتبر» شود.
++- **شناسهٔ ماده/نسخه محاسبه می‌شود، نه ورودی:** ناسازگاری و تکرار پنهان (`۱۰`/`10`) ممکن نیست.
++- **پیش‌فرض بازبینی = تأییدنشده.** «تأییدشده» بدون نام و تاریخ بازبین نامعتبر. تصمیم «نمایش یا نه» با مصرف‌کننده است، ولی `verified` همراه هر نتیجه می‌آید.
++- **سخت‌گیری امنیتی روی متن:** نویسهٔ کنترلی، علامت‌های جهت‌دهی Trojan-Source (U+202A–202E، U+2066–2069) و BOM ممنوع؛ نیم‌فاصله و LRM/RLM مجاز؛ کلید ناشناخته (و `__proto__`) خطا؛ نشانی فقط `http(s)`؛ سقف‌های فنی.
++- **بدون وابستگی تازه** (`package.json` و قفل‌فایل دست‌نخورده)؛ نرمال‌سازی ارقام/ک/ی کوچکِ داخلی چون registry به `persian-text` وابستگی نداده.
++- **`registry.ts` و `shared-types` را تغییر ندادم.** خطای فهرستی از پارامتر دومِ `Result` (از قبل عمومی) استفاده می‌کند.
++
++## کیفیت و آنچه آزمون پیدا کرد
++- **تست فازی یک باگ واقعی گرفت:** آرایهٔ تُنُک (`delete arr[i]`) در ورودی بی‌صدا رد می‌شد و بعداً `TypeError` پرتاب می‌کرد. اصلاح (`Array.from`) + تست رگرسیون + ردیف در `known-pitfalls`.
++- **یک باگ منطقی را تست نوشته‌شده گرفت:** رابطه‌ای که هم سطح سند و هم سطح ماده را لمس می‌کند، دوبار برمی‌گشت؛ حالا یکتا است.
++- **oracle مستقل:** ۳۰۰ زنجیرهٔ نسخهٔ تصادفی × همهٔ روزهای مرزی (≥ ۵۰۰۰ بررسی)، با حساب روی «شمارهٔ روز صحیح» (نه رشته)، و بررسی اینکه هر چهار وضعیت زمانی واقعاً دیده شده‌اند.
++- **تست فازی:** ۳۰۰۰ جهش تصادفی روی نمونه؛ هرگز پرتاب نمی‌کند، خروجی موفق همیشه خودتوان است، و هر دو شاخه (موفق/ناموفق) پوشش دارند.
++- **آزمون جهشی** (`python3 tooling/mutation/legal-kb-schema.py`): ۳۴ جهش اعمال شد؛ ۳۳ تا تست را قرمز کردند (از جمله `<`→`<=` در دو مرز بازه، هم‌پوشانی مجاور، نسخهٔ بی‌پایان، کبیسهٔ قرن، ک/ی عربی، علامت‌های Trojan-Source، پیش‌فرض بازبینی، صراحت `validTo`). ۱ جهش «بازمانده» **کد مرده** بود (`b !== a` که `loadCorpus` پیشاپیش ناممکنش می‌کند) و کد ساده‌تر شد. حالا ۳۳ از ۳۳ کشته می‌شوند.
++- اسکریپت جهش جزو CI نیست و فقط Python 3 استاندارد می‌خواهد.
++
++## چه ماند (بازبینی انسانی — اجباری؛ ناحیهٔ «شمای دانش و استناد»)
++حقوقدان باید:
++1. مدل را از نظر **کفایت برای ارجاع حقوقی** بررسی کند (پرسش‌های پایین).
++2. نسخه‌بندی زمانی و معنای `validFrom/validTo` را تأیید کند (پرسش ۲).
++3. سپس مالک معماری وضعیت `legal-kb-schema` را در `registry.ts` «done» کند (من نکردم، مثل `legal-calc`).
++
++## سؤال‌های باز
++1. **معنای `validFrom`:** تاریخ «لازم‌الاجرا» یا «انتشار»؟ و برای نسخ، روز نسخ **نخستین روزِ نامعتبر** است؟ (مدل: نیم‌باز؛ قاعدهٔ حقوقی را داده تعیین می‌کند، ماژول فرضی ندارد.)
++2. **اجبار «نسخ ⇒ بسته‌شدن بازه»:** وقتی رابطهٔ `repeals` با `effectiveFrom` ثبت شد، آیا بازهٔ آخرین نسخهٔ هدف باید همان روز بسته شود و داده‌ی ناهمخوان رد شود؟ (نساختم؛ قاعدهٔ حقوقی و کیفیت داده را می‌خواهد.)
++3. **شکل‌های برچسب ماده:** «مکرر ۲» (شمارندهٔ دوم) در قانون واقعی هست؟ «الحاقی»، «تبصرهٔ ماده»، «اصل» (قانون اساسی)، فصل/باب/بخش لازم‌اند؟ هر شکل ناشناخته الان خطای صریح است.
++4. **فهرست انواع:** سند (قانون اساسی، قانون، آیین‌نامه، دستورالعمل، مصوبه)، رأی (وحدت رویه، شورای نگهبان، مشورتی، دادگاه)، رابطه (۶ نوع) کامل است؟ (مثلاً مصوبهٔ مجمع تشخیص، آرای دیوان عدالت اداری، معاهده/کنوانسیون.) آیا «الزام‌آور بودن» رأی در مدل لازم است؟
++5. **تبصره/بند تودرتو:** الان تبصره/بند تخت است (`note`/`clause` با برچسب). تبصرهٔ تبصره یا بندِ بندِ ماده لازم است؟
++6. **سیاست بازبینی:** تأیید در سطح هر نسخه است. آیا نسخهٔ تأییدشده با منبع «ثانویه» پذیرفتنی است (حقوقدان با متن رسمی تطبیق دهد) یا باید `sourceKind=official` اجباری شود؟
++7. **متن خام در برابر نرمال:** پیشنهاد: `text` همان متن رسمی (بی‌دستکاری جز برش دو سر و CRLF) و کلید جست‌وجو در store با `persian-text` ساخته شود. تأیید؟
++
++## درخواست‌های معماری (برای مالک؛ من تغییر ندادم)
++- **الف)** برای بخش ۴ج: `legal-kb-ingest` برای تبدیل جلالی→میلادی `jalali-date` لازم دارد؛ در registry فعلی فقط `persian-text` و `legal-kb-schema` اعلام شده. پیشنهاد: افزودن `jalali-date` به `dependsOn` آن (لایهٔ ۱ ≤ ۲؛ چرخه ندارد).
++- **ب)** `Review`/`ReviewStatus` اکنون **چهار نسخه** دارد (سه‌تا در `legal-calc` و یکی در این ماژول، چون وابستگی به آن مجاز نیست). مقدارهای رشته‌ای عمداً یکسان‌اند. پیشنهاد (تکرار یادداشت ۰۰۰۴): انتقال به `shared-types` در یک کار جدا.
++- **ج)** وضعیت `legal-kb-schema` پس از بازبینی حقوقدان.
++
++## خارج از این کار
++ذخیرهٔ پایگاه داده، دریافت/شکستن متن، هر قانون واقعی، جست‌وجوی کلمه‌ای/برداری، `citation-verifier`، گام‌های ۵ به بعد، و هر تغییر در `legal-calc`.
++
++## گام بعد (پیشنهاد)
++۱) پاسخ سؤال‌ها، **به‌ویژه برای ۴ج: کدام منبع رسمی و کدام قانون کوچک اول؟** ۲) **۴ب `legal-kb-store`:** جدول‌های drizzle با بازهٔ نیم‌باز در پایگاه (`daterange` + قید `EXCLUDE USING gist` برای نبود هم‌پوشانی؛ نیازمند افزونهٔ `btree_gist`)، تست یکپارچگی با پایگاه واقعی و بازبینی مهاجرت توسط مالک معماری. ۳) اگر حقوقدان ورودی داد: طبقهٔ دوم ارث یا حق‌الوکاله (طبق ۰۰۰۴/۰۰۰۳).
++
++## یادداشت‌های فنی
++- **پوش به GitHub انجام نشد:** در محیط ساخت این تحویل اعتبار نوشتن روی مخزن نبود. کامیت **محلی** روی `main` ساخته شد و به‌صورت پچ (`git am`)، bundle و zip تحویل داده می‌شود (راهنمای اعمال در پیام تحویل).
++- محیط ساخت: `npm install --no-package-lock` (مثل ۰۰۰۳/۰۰۰۴)؛ هیچ فایل قفل یا `package.json` عوض نشد.
++- `npm run build` بدون `DATABASE_URL` در «collect page data» خطا می‌دهد (از قبل بوده)؛ با مقدار ساختگی/واقعی سبز است.
++- در کلون هیچ PDFای نبود؛ به هیچ PDFای ارجاع داده نشده است.
+diff --git a/docs/known-pitfalls.md b/docs/known-pitfalls.md
+index bb41992..0162dbd 100644
+--- a/docs/known-pitfalls.md
++++ b/docs/known-pitfalls.md
+@@ -28,3 +28,9 @@
+ | فایل داده با پسوند جدید (`*-shares.ts`) بیرون از بررسی جداسازی می‌ماند | الگو فقط `tariffs`/`indices` را می‌شناخت | الگوی «tariffs یا indices یا shares» در پسوند `-*.ts` + فهرست فایل‌های داده در تست جداسازی |
+ | `pkill -f` در دستور bash خودِ پوسته را می‌کشد | الگو با خط فرمان همان پوسته هم می‌خواند | با PID (`pgrep` سپس `kill`) ببندید |
+ 
++| `.map` روی آرایهٔ JSON/ورودی خانه‌های خالیِ آرایهٔ تُنُک (`delete arr[i]`) را بی‌صدا رد می‌کند و بررسی‌ها دور می‌زنند (بعداً پرتاب `TypeError`) | `Array.prototype.map/forEach` به حفره‌ها نمی‌رسند | در خواندن ورودی `unknown` اول `Array.from(arr)` (حفره ← `undefined`)؛ تست فازی گرفت؛ رگرسیون در `load.test.ts` |
++| تاریخ جلالی (`1403-01-01`) به‌جای میلادی در داده می‌نشیند و بی‌خطا ذخیره می‌شود | هر دو قالب `YYYY-MM-DD`‌اند | سال خارج از ۱۸۰۰–۲۲۰۰ رد می‌شود؛ مدل فقط میلادی؛ تبدیل در مرز با `jalali-date` |
++| «`validTo` فراموش‌شده» به‌معنای «هنوز معتبر» خوانده می‌شود | `undefined`≈`null` | `validTo` و `effectiveFrom` باید صریح بیایند (`null` مجاز، غیبت خطا) |
++| کلید ناشناخته (`validTO`) بی‌صدا نادیده گرفته می‌شود و فیلد پیش‌فرض می‌گیرد | خواندن فقط کلیدهای شناخته‌شده | `record()` کلید اضافه را `UNKNOWN_FIELD` می‌کند؛ `__proto__` از `JSON.parse` هم همین‌طور |
++| `ماده ۱۰` و `ماده ۱۰ مکرر` و `10` یک ماده فرض می‌شوند یا برعکس یک ماده دو شناسه می‌گیرد | تایپ‌های مختلف (ارقام فارسی/عربی، ك/ک) | برچسب متعارف یکتا؛ شناسه محاسبه‌شده، نه ورودی |
++| رابطه‌ای که هم سطح سند و هم سطح ماده را لمس می‌کند دو بار برمی‌گردد | شاخص دو گره دارد | `relationsFor` با `Set` یکتا می‌کند (تست) |
+diff --git a/docs/tasks/0006-legal-kb-schema.md b/docs/tasks/0006-legal-kb-schema.md
+new file mode 100644
+index 0000000..1969227
+--- /dev/null
++++ b/docs/tasks/0006-legal-kb-schema.md
+@@ -0,0 +1,55 @@
++# شمای پایگاه دانش قانون (legal-kb-schema، گام ۴ — بخش الف از سه بخش)
++
++## هدف (یک جمله)
++تعریف مدل داده‌ی قانون/ماده/نسخهٔ زمانی/رابطه/رأی، با اعتبارسنجی سخت‌گیرانهٔ ورودی `unknown` و جست‌وجوی «نسخهٔ معتبر در یک تاریخ»؛ بدون هیچ داده‌ی حقوقی واقعی.
++
++## چرا این کار، و چرا تقسیم
++- همهٔ کارهای باقی‌ماندهٔ گام ۳ (`legal-calc`: طبقهٔ دوم ارث، حق‌الوکاله، دیه، مهریه) به **ورودی حقوقدان** وابسته‌اند (سؤال‌های باز ۰۰۰۴، متن رسمی تعرفه و جدول‌ها) و ساختنشان یعنی حدس یا عددسازی از حافظه (ممنوع در `AGENTS.md`).
++- گام ۴ طبق `registry.ts` «پایگاه دانش قانون» است و `legal-kb-schema` فقط به `shared-types` وابسته است و **عدد/متن قانون نمی‌خواهد**؛ پس بدون منتظرماندن برای حقوقدان قابل ساخت و تست کامل است، و بقیهٔ گام‌ها (store، ingest، retrieval، citation-verifier) روی آن بنا می‌شوند.
++- گام ۴ بزرگ است؛ به سه بخش تقسیم شد تا کیفیت افت نکند:
++
++| بخش | ماژول | محتوا | وضعیت |
++|---|---|---|---|
++| **۴الف (این کار)** | `legal-kb-schema` | نوع‌ها، `loadCorpus` (اعتبارسنجی/نرمال‌سازی)، برچسب ماده و کلید ارجاع، نسخه‌بندی زمانی، رابطه/رأی | ✅ این تحویل |
++| ۴ب | `legal-kb-store` | ذخیره در PostgreSQL (drizzle)، مهاجرت، جست‌وجوی کلمه‌ای، (بعداً برداری) | بعدی؛ مهاجرت پایگاه داده = **ناحیهٔ پرریسک** |
++| ۴ج | `legal-kb-ingest` | دریافت و شکستن به ماده از **یک** قانون کوچک و بارگذاری | **منتظر پاسخ شما:** منبع رسمی و قانون اول |
++
++## ماژول و پوشه‌های مجاز
++- `src/modules/legal-kb-schema/**`
++- `src/app/kb-schema/**` و ناوبری/لینک (`site-nav.tsx`، `src/app/page.tsx`)
++- `docs/**`، `tooling/mutation/**`
++
++## ممنوع
++`shared-types`، `registry.ts` (وضعیت `legal-kb-schema` تغییر نکند)، `src/db`، `package.json`، قفل‌فایل، `legal-calc`، `jalali-date`، `persian-text`.
++هیچ قانون/ماده/رأی واقعی در مخزن نباید بیاید؛ فقط نمونهٔ ساختگی.
++
++## قرارداد
++`src/modules/legal-kb-schema/index.ts`؛ نوع‌ها در `types.ts`. بدون تغییر در `shared-types` (فقط کدهای خطای موجود؛ خطای فهرستیِ اعتبارسنجی با `Result<T, readonly CorpusIssue[]>` — پارامتر دومِ `Result` از قبل عمومی است).
++
++## معیار پذیرش
++1. تنها دروازهٔ ورود داده `loadCorpus(unknown)`؛ هر خطا با مسیر دقیق و پیام فارسی؛ همهٔ مسائل یک‌جا؛ هرگز پرتاب نمی‌کند.
++2. سخت‌گیری: کلید ناشناخته، نوع نادرست، تاریخ ناممکن/جلالی‌به‌جای‌میلادی، متن خالی، نویسهٔ کنترلی و Trojan-Source، نشانی غیر http(s)، آرایهٔ تُنُک، سقف‌های فنی.
++3. شناسهٔ ماده و نسخه محاسبه‌شده است (برچسب متعارف؛ `۱۰` = `10`)؛ هیچ ماده/نسخه‌ای دو شناسه ندارد.
++4. نسخه‌ها بازهٔ **نیم‌باز** `[validFrom, validTo)`؛ هم‌پوشانی و تکراری خطا؛ شکاف مجاز و در جست‌وجو صریح؛ `validTo` باید صریح بیاید.
++5. `resolveCitation` همهٔ حالت‌ها را صریح برمی‌گرداند: `found`، `unknown-document|article|subpart`، `not-yet-in-force`، `no-longer-in-force`، `gap`. و `verified` از وضعیت بازبینی همان نسخه.
++6. پیش‌فرض بازبینی = «تأییدنشده»؛ «تأییدشده» بدون نام و تاریخ بازبین نامعتبر است.
++7. رابطه‌ها و رأی‌ها: ارجاع معلق، تکراری، خودارجاع و نسخ/جایگزینیِ متناقض گرفته می‌شود.
++8. تست با oracle مستقل (حساب روی شمارهٔ روز صحیح)، تست فازی، رگرسیون باگ‌های یافته‌شده و آزمون جهشی.
++
++## تست‌های مورد انتظار
++عادی (نمونهٔ ساختگی، رفت‌وبرگشت، ترتیب متعارف)، مرزی (روز شروع/پایان، شکاف، ۱ و ۹۹۹۹۹، سقف‌ها)، خطا (هر کد مسئله)، خاصیت (۲۰۰۰ برچسب تصادفی؛ ۳۰۰ زنجیرهٔ تصادفی × روزهای مرزی؛ ۳۰۰۰ جهش فازی).
++
++## خارج از کار
++ذخیره در پایگاه داده (۴ب)، دریافت/پاک‌سازی/شکستن متن (۴ج)، جست‌وجوی کلمه‌ای/برداری، بارگذاری هر قانون واقعی، نرمال‌سازی متن فارسی (کار `persian-text` در ingest)، تبدیل جلالی↔میلادی (کار مرز؛ این ماژول فقط میلادی ISO)، بررسی «نسخ ⇒ بسته‌شدن بازه» (نیازمند قاعدهٔ حقوقدان)، متن تبصره‌های تودرتو، ساختار فصل/باب.
++
++## وابستگی‌ها
++`shared-types` (فقط). گام ۳ (جداگانه) دست‌نخورده.
++
++## فایل‌های مرجع برای خواندن
++`AGENTS.md`، `docs/adr/0001-modular-layers.md`، `docs/adr/0003-legal-kb-schema.md`، `registry.ts`، `docs/handoffs/0004-…`.
++
++## بازبینی و ریسک
++ناحیهٔ پرریسک («شمای دانش و استناد»؛ بازبین: حقوقدان). پرسش‌های باز در یادداشت تحویل ۰۰۰۵.
++
++## تعریف «تمام شد»
++تست‌ها و CI سبز، آزمون جهشی، README، ADR-0003، یادداشت تحویل ۰۰۰۵؛ بازبینی حقوقدان باز می‌ماند.
+diff --git a/src/app/_components/site-nav.tsx b/src/app/_components/site-nav.tsx
+index 30559fc..d4f0b77 100644
+--- a/src/app/_components/site-nav.tsx
++++ b/src/app/_components/site-nav.tsx
+@@ -10,6 +10,7 @@ const ITEMS = [
+   { href: "/court-fee", label: "هزینهٔ دادرسی" },
+   { href: "/late-payment", label: "تأخیر تأدیه" },
+   { href: "/inheritance", label: "سهم‌الارث" },
++  { href: "/kb-schema", label: "شمای دانش" },
+ ] as const;
+ 
+ export function SiteNav() {
+diff --git a/src/app/kb-schema/page.tsx b/src/app/kb-schema/page.tsx
+new file mode 100644
+index 0000000..430cafc
+--- /dev/null
++++ b/src/app/kb-schema/page.tsx
+@@ -0,0 +1,18 @@
++import { KbSchemaWorkbench } from "./workbench";
++
++export default function KbSchemaPage() {
++  return (
++    <div className="space-y-6">
++      <header>
++        <p className="text-xs font-medium text-gold-700">ماژول legal-kb-schema · لایهٔ ۲ · خالص · 🔴 بازبینی حقوقدان · گام ۴ (بخش الف)</p>
++        <h1 className="mt-1 text-2xl font-extrabold text-ink-900">شمای پایگاه دانش قانون</h1>
++        <p className="mt-2 max-w-3xl text-sm leading-7 text-ink-700">
++          مدل داده‌ی قانون، ماده، <b>نسخهٔ زمانی</b>، رابطه و رأی؛ با اعتبارسنجی سخت‌گیرانه و جست‌وجوی «کدام متن در این تاریخ معتبر بود؟».
++          هر چه اینجا می‌بینید در مرورگر شما اجرا می‌شود. <b>داده‌ی نمایشی کاملاً ساختگی است</b> و هیچ قانون یا ماده‌ی واقعی در پروژه نیست؛
++          بارگذاری قانون واقعی بخش‌های بعدی است و منبع رسمی و تأیید حقوقدان می‌خواهد.
++        </p>
++      </header>
++      <KbSchemaWorkbench />
++    </div>
++  );
++}
+diff --git a/src/app/kb-schema/workbench.tsx b/src/app/kb-schema/workbench.tsx
+new file mode 100644
+index 0000000..ffcbe80
+--- /dev/null
++++ b/src/app/kb-schema/workbench.tsx
+@@ -0,0 +1,299 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { formatJalaliDate, gregorianToJalali, jalaliToGregorian, parseJalaliDate } from "@/modules/jalali-date";
++import {
++  FICTIONAL_SAMPLE_CORPUS,
++  buildCorpusIndex,
++  loadCorpusFromJson,
++  relationsFor,
++  resolveCitation,
++  rulingsCiting,
++  versionsInForceAt,
++  type ArticleVersion,
++  type CorpusIssue,
++  type RelationType,
++  type SubpartKind,
++  type VersionLookup,
++} from "@/modules/legal-kb-schema";
++import { toPersianDigits } from "@/modules/persian-text";
++import { Badge, Card, ErrorNote, Field, Stat, inputClass } from "../_components/ui";
++
++const fa = (n: number | string) => toPersianDigits(String(n));
++const SAMPLE_JSON = JSON.stringify(FICTIONAL_SAMPLE_CORPUS, null, 2);
++
++/** تاریخ ISO میلادی → جلالی برای نمایش. */
++function jalaliText(iso: string): string {
++  const [y, m, d] = iso.split("-").map(Number) as [number, number, number];
++  const j = gregorianToJalali({ year: y, month: m, day: d });
++  if (!j.ok) return iso;
++  const f = formatJalaliDate(j.value);
++  return f.ok ? f.value : iso;
++}
++
++const RELATION_LABEL: Readonly<Record<RelationType, string>> = {
++  amends: "اصلاح می‌کند",
++  repeals: "نسخ می‌کند",
++  replaces: "جایگزین می‌شود",
++  "refers-to": "ارجاع می‌دهد به",
++  implements: "اجراکنندهٔ",
++  interprets: "تفسیر می‌کند",
++};
++
++const KIND_LABEL = { constitution: "قانون اساسی", statute: "قانون", regulation: "آیین‌نامه", directive: "دستورالعمل", approval: "مصوبه" } as const;
++
++function IssueList({ issues }: { issues: readonly CorpusIssue[] }) {
++  return (
++    <ul className="max-h-72 space-y-2 overflow-auto" aria-label="فهرست مسائل">
++      {issues.map((i, k) => (
++        <li key={k} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-6 text-rose-900">
++          <div className="flex flex-wrap items-center gap-2">
++            <Badge tone="risk">{i.code}</Badge>
++            <bdi dir="ltr" className="font-mono text-[11px]">{i.path}</bdi>
++          </div>
++          <p className="mt-1">{i.message}</p>
++        </li>
++      ))}
++    </ul>
++  );
++}
++
++function VersionCard({ version }: { version: ArticleVersion }) {
++  return (
++    <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-4 text-sm leading-8 text-ink-900">
++      <p className="whitespace-pre-wrap">{version.text}</p>
++      {version.subparts.length > 0 && (
++        <ul className="mt-3 space-y-1 border-t border-ink-100 pt-3 text-xs leading-7 text-ink-700">
++          {version.subparts.map((s) => (
++            <li key={`${s.kind}:${s.label}`}>
++              <b>{s.kind === "note" ? "تبصره" : "بند"} {fa(s.label)}:</b> {s.text}
++            </li>
++          ))}
++        </ul>
++      )}
++    </div>
++  );
++}
++
++function LookupView({ lookup }: { lookup: VersionLookup }) {
++  switch (lookup.status) {
++    case "found":
++      return (
++        <div className="space-y-3">
++          <div className="flex flex-wrap items-center gap-2">
++            <Badge tone="ok">در این تاریخ معتبر</Badge>
++            {lookup.verified ? <Badge tone="ok">تأییدشده توسط حقوقدان</Badge> : <Badge tone="warn">تأییدنشده — قابل استناد به کاربر نیست</Badge>}
++            <Badge>{lookup.version.provenance.sourceKind === "official" ? "منبع رسمی" : "منبع ثانویه"}</Badge>
++          </div>
++          <p className="text-xs text-ink-700">
++            بازهٔ اعتبار این نسخه: از <b>{jalaliText(lookup.version.validFrom)}</b>{" "}
++            {lookup.version.validTo === null ? "تا کنون (بی‌پایان)" : <>تا <b>{jalaliText(lookup.version.validTo)}</b> (آن روز دیگر معتبر نیست)</>}
++          </p>
++          {lookup.subpart && (
++            <p className="rounded-lg border border-gold-500/40 bg-gold-100/50 px-3 py-2 text-xs leading-6">
++              <b>{lookup.subpart.kind === "note" ? "تبصره" : "بند"} {fa(lookup.subpart.label)}:</b> {lookup.subpart.text}
++            </p>
++          )}
++          <VersionCard version={lookup.version} />
++        </div>
++      );
++    case "unknown-document":
++      return <ErrorNote>چنین سندی در پایگاه نیست. (ارجاع نامعتبر؛ هرگز به کاربر نشان داده نمی‌شود.)</ErrorNote>;
++    case "unknown-article":
++      return <ErrorNote>این ماده در سند انتخاب‌شده نیست. (ارجاع نامعتبر.)</ErrorNote>;
++    case "unknown-subpart":
++      return (
++        <div className="space-y-3">
++          <ErrorNote>ماده هست، اما این تبصره/بند در نسخهٔ معتبر آن تاریخ وجود ندارد. (ارجاع نامعتبر.)</ErrorNote>
++          <VersionCard version={lookup.version} />
++        </div>
++      );
++    case "not-yet-in-force":
++      return <ErrorNote>در این تاریخ این ماده هنوز وضع نشده بود؛ نخستین نسخه از {jalaliText(lookup.firstValidFrom)} معتبر است.</ErrorNote>;
++    case "no-longer-in-force":
++      return <ErrorNote>در این تاریخ این ماده دیگر معتبر نیست؛ اعتبار آخرین نسخه در {jalaliText(lookup.lastValidTo)} پایان یافته است.</ErrorNote>;
++    case "gap":
++      return (
++        <ErrorNote>
++          در این تاریخ هیچ نسخه‌ای معتبر نیست (شکاف): نسخهٔ قبلی از {jalaliText(lookup.previousValidTo)} معتبر نیست و نسخهٔ بعدی از {jalaliText(lookup.nextValidFrom)} آغاز می‌شود.
++        </ErrorNote>
++      );
++  }
++}
++
++export function KbSchemaWorkbench() {
++  const [json, setJson] = useState(SAMPLE_JSON);
++  const [docId, setDocId] = useState("sample-law");
++  const [article, setArticle] = useState("1");
++  const [subKind, setSubKind] = useState<SubpartKind | "">("");
++  const [subLabel, setSubLabel] = useState("");
++  const [jalali, setJalali] = useState("1395/04/25");
++
++  const loaded = useMemo(() => loadCorpusFromJson(json), [json]);
++  const index = useMemo(() => (loaded.ok ? buildCorpusIndex(loaded.value) : null), [loaded]);
++
++  const date = useMemo(() => {
++    const p = parseJalaliDate(jalali);
++    if (!p.ok) return { error: p.error.message } as const;
++    const g = jalaliToGregorian(p.value);
++    if (!g.ok) return { error: g.error.message } as const;
++    const pad = (n: number, w: number) => String(n).padStart(w, "0");
++    return { iso: `${pad(g.value.year, 4)}-${pad(g.value.month, 2)}-${pad(g.value.day, 2)}` } as const;
++  }, [jalali]);
++
++  const lookup = useMemo(() => {
++    if (!index || "error" in date) return null;
++    return resolveCitation(index, { documentId: docId, article, subpart: subKind === "" ? null : { kind: subKind, label: subLabel } }, date.iso);
++  }, [index, date, docId, article, subKind, subLabel]);
++
++  const inForce = useMemo(() => {
++    if (!index || "error" in date) return null;
++    const r = versionsInForceAt(index, date.iso);
++    return r.ok ? r.value : null;
++  }, [index, date]);
++
++  const counts = useMemo(() => {
++    if (!loaded.ok) return null;
++    const c = loaded.value;
++    const versions = c.documents.flatMap((d) => d.articles.flatMap((a) => a.versions));
++    return {
++      documents: c.documents.length,
++      articles: c.documents.reduce((n, d) => n + d.articles.length, 0),
++      versions: versions.length,
++      verified: versions.filter((v) => v.provenance.review.status === "legally-verified").length,
++      relations: c.relations.length,
++      rulings: c.rulings.length,
++    };
++  }, [loaded]);
++
++  const node = { documentId: docId, article: article.trim() === "" ? null : article };
++  const rels = index ? relationsFor(index, node) : [];
++  const rulings = index ? rulingsCiting(index, node) : [];
++
++  return (
++    <div className="grid gap-5 lg:grid-cols-2">
++      <div className="space-y-5">
++        <Card title="داده‌ی پایگاه (JSON)" hint="هر ویرایشی بلافاصله اعتبارسنجی می‌شود. نمونهٔ پیش‌فرض ساختگی است.">
++          <textarea
++            dir="ltr"
++            spellCheck={false}
++            value={json}
++            onChange={(e) => setJson(e.target.value)}
++            aria-label="JSON پایگاه دانش"
++            className={`${inputClass} h-72 resize-y font-mono text-[11px] leading-5`}
++          />
++          <div className="mt-3 flex flex-wrap items-center gap-2">
++            <button type="button" onClick={() => setJson(SAMPLE_JSON)} className="rounded-lg border border-ink-200 px-3 py-1.5 text-xs text-ink-800 transition hover:bg-ink-50">
++              بازگرداندن نمونهٔ ساختگی
++            </button>
++            {loaded.ok ? <Badge tone="ok">معتبر</Badge> : <Badge tone="risk">{fa(loaded.error.length)} مسئله</Badge>}
++          </div>
++        </Card>
++
++        <Card title="وضعیت اعتبارسنجی">
++          {loaded.ok && counts ? (
++            <div className="space-y-3">
++              <div className="grid grid-cols-3 gap-2">
++                <Stat label="سند" value={fa(counts.documents)} />
++                <Stat label="ماده" value={fa(counts.articles)} />
++                <Stat label="نسخه" value={fa(counts.versions)} />
++                <Stat label="تأییدشدهٔ حقوقدان" value={fa(counts.verified)} />
++                <Stat label="رابطه" value={fa(counts.relations)} />
++                <Stat label="رأی" value={fa(counts.rulings)} />
++              </div>
++              {counts.verified < counts.versions && (
++                <p role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-900">
++                  ⚠️ {fa(counts.versions - counts.verified)} نسخه هنوز <b>تأییدنشده</b> است؛ تا تأیید حقوقدان نباید به کاربر به‌عنوان استناد نشان داده شود.
++                </p>
++              )}
++            </div>
++          ) : (
++            !loaded.ok && <IssueList issues={loaded.error} />
++          )}
++        </Card>
++      </div>
++
++      <div className="space-y-5">
++        <Card title="کدام متن در این تاریخ معتبر بود؟" hint="بازهٔ هر نسخه نیم‌باز است: روز شروع شامل و روز پایان دیگر معتبر نیست.">
++          {!index ? (
++            <p className="text-xs text-ink-500">ابتدا JSON را اصلاح کنید.</p>
++          ) : (
++            <div className="space-y-4">
++              <div className="grid gap-3 sm:grid-cols-2">
++                <Field label="سند">
++                  <select value={docId} onChange={(e) => setDocId(e.target.value)} className={inputClass}>
++                    {index.corpus.documents.map((d) => (
++                      <option key={d.id} value={d.id}>
++                        {d.title} ({KIND_LABEL[d.kind]})
++                      </option>
++                    ))}
++                    <option value="unknown-doc">— سند ناموجود (آزمون) —</option>
++                  </select>
++                </Field>
++                <Field label="ماده" hint="مثل ۱، ۲ مکرر، واحده">
++                  <input value={article} onChange={(e) => setArticle(e.target.value)} className={inputClass} />
++                </Field>
++                <Field label="تبصره/بند (اختیاری)">
++                  <div className="flex gap-2">
++                    <select value={subKind} onChange={(e) => setSubKind(e.target.value as SubpartKind | "")} className={`${inputClass} !w-28`}>
++                      <option value="">—</option>
++                      <option value="note">تبصره</option>
++                      <option value="clause">بند</option>
++                    </select>
++                    <input value={subLabel} onChange={(e) => setSubLabel(e.target.value)} disabled={subKind === ""} placeholder="۱ یا الف" className={inputClass} />
++                  </div>
++                </Field>
++                <Field label="تاریخ (جلالی)" hint={"error" in date ? undefined : `میلادی: ${date.iso}`}>
++                  <input dir="ltr" value={jalali} onChange={(e) => setJalali(e.target.value)} className={`${inputClass} font-mono`} />
++                </Field>
++              </div>
++              {"error" in date && <ErrorNote>{date.error}</ErrorNote>}
++              {lookup && !lookup.ok && <ErrorNote>{lookup.error.message}</ErrorNote>}
++              {lookup && lookup.ok && <LookupView lookup={lookup.value} />}
++            </div>
++          )}
++        </Card>
++
++        <Card title="مواد معتبر در این تاریخ" hint="همان فیلتر تاریخ اعتبار که بازیابی (گام ۶) از آن استفاده می‌کند.">
++          {inForce === null ? (
++            <p className="text-xs text-ink-500">تاریخ یا داده معتبر نیست.</p>
++          ) : inForce.length === 0 ? (
++            <p className="text-xs text-ink-500">در این تاریخ هیچ ماده‌ای معتبر نیست.</p>
++          ) : (
++            <ul className="space-y-1.5 text-xs">
++              {inForce.map((e) => (
++                <li key={`${e.documentId}/${e.article}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink-100 px-3 py-2">
++                  <span>
++                    <bdi dir="ltr" className="font-mono">{e.documentId}</bdi> · ماده {fa(e.article)}
++                  </span>
++                  {e.verified ? <Badge tone="ok">تأییدشده</Badge> : <Badge tone="warn">تأییدنشده</Badge>}
++                </li>
++              ))}
++            </ul>
++          )}
++        </Card>
++
++        <Card title="رابطه‌ها و رأی‌های مرتبط با گرهٔ انتخاب‌شده">
++          {rels.length === 0 && rulings.length === 0 ? (
++            <p className="text-xs text-ink-500">رابطه یا رأی‌ای ثبت نشده است.</p>
++          ) : (
++            <ul className="space-y-2 text-xs leading-6">
++              {rels.map((r, i) => (
++                <li key={`r${i}`} className="rounded-lg border border-ink-100 px-3 py-2">
++                  <bdi dir="ltr" className="font-mono">{r.from.documentId}{r.from.article ? `/${r.from.article}` : ""}</bdi> {RELATION_LABEL[r.type]}{" "}
++                  <bdi dir="ltr" className="font-mono">{r.to.documentId}{r.to.article ? `/${r.to.article}` : ""}</bdi>
++                  {r.effectiveFrom && <span className="text-ink-500"> — از {jalaliText(r.effectiveFrom)}</span>}
++                </li>
++              ))}
++              {rulings.map((g) => (
++                <li key={g.id} className="rounded-lg border border-gold-500/40 bg-gold-100/40 px-3 py-2">
++                  <b>رأی:</b> {g.title ?? g.id} ({fa(g.number)}) — {jalaliText(g.issuedOn)}
++                </li>
++              ))}
++            </ul>
++          )}
++        </Card>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 0c80b0a..d256e39 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -72,6 +72,9 @@ export default function HomePage() {
+               <Link href="/inheritance" className="rounded-xl border border-white/25 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/10">
+                 سهم‌الارث (پیش‌نمایش legal-calc · طبقهٔ اول · در انتظار حقوقدان)
+               </Link>
++              <Link href="/kb-schema" className="rounded-xl border border-white/25 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/10">
++                شمای پایگاه دانش (پیش‌نمایش legal-kb-schema · گام ۴ بخش الف · داده‌ی ساختگی)
++              </Link>
+             </div>
+           </div>
+           <div className="grid min-w-52 grid-cols-2 gap-3 text-center">
+@@ -182,7 +185,8 @@ export default function HomePage() {
+               (جزئیات: یادداشت تحویل ۰۰۰۴).
+             </li>
+             <li>
+-              <b>منبع قوانین:</b> کدام منبع رسمی و کدام قانون کوچک برای نخستین بارگذاری (گام ۴)؟
++              <b>منبع قوانین (مسدودکنندهٔ بخش ۴ج):</b> کدام منبع رسمی و کدام قانون کوچک برای نخستین بارگذاری؟ شمای داده (بخش ۴الف)
++              ساخته شد و منتظر این پاسخ نیست؛ بارگذاری واقعی منتظر آن است. پرسش‌های باز شما: یادداشت تحویل ۰۰۰۵.
+             </li>
+             <li>
+               <b>بازبینی انسانی</b> <span className="ltr-field font-mono text-xs">jalali-date</span> با
+diff --git a/src/modules/legal-kb-schema/README.md b/src/modules/legal-kb-schema/README.md
+new file mode 100644
+index 0000000..e34ba22
+--- /dev/null
++++ b/src/modules/legal-kb-schema/README.md
+@@ -0,0 +1,48 @@
++# legal-kb-schema (لایهٔ ۲ · خالص · 🔴 بازبینی حقوقدان)
++
++**هدف:** مدل داده‌ی پایگاه دانش قانون (قانون ← ماده ← نسخهٔ زمانی؛ رابطه؛ رأی) + اعتبارسنجی سخت‌گیرانه + جست‌وجوی «کدام متن در این تاریخ معتبر بود؟». بدون I/O.
++**وابستگی:** فقط `shared-types`.
++
++> ⚠️ **این ماژول هیچ قانون واقعی ندارد.** تنها داده‌اش `FICTIONAL_SAMPLE_CORPUS` است و کاملاً ساختگی (برای تست و میز آزمایش).
++> بارگذاری قانون واقعی بخش ۴ج است و منبع رسمی + تأیید حقوقدان می‌خواهد.
++> در `registry.ts` وضعیتش «planned» مانده (بازبینی انسانی باز است؛ تغییر وضعیت با مالک معماری).
++> طراحی و دلیل‌ها: `docs/adr/0003-legal-kb-schema.md`.
++
++## رابط عمومی
++
++| تابع | کار |
++|---|---|
++| `loadCorpus(unknown)` / `loadCorpusFromJson(text)` | **تنها دروازهٔ ورود داده.** `Result<Corpus, CorpusIssue[]>`؛ همهٔ مسائل با مسیر و پیام فارسی؛ خروجی متعارف و خودتوان |
++| `buildCorpusIndex(corpus)` | شاخص خواندنی (فقط روی خروجی `loadCorpus` درست است) |
++| `resolveCitation(index, ref, isoDate)` | `VersionLookup` صریح؛ `Result` فقط برای ورودی بد |
++| `versionsInForceAt(index, isoDate)` | همهٔ مواد معتبر در تاریخ (برای فیلتر تاریخ بازیابی) |
++| `relationsFor` · `rulingsCiting` · `findDocument` · `findArticle` | جست‌وجوهای کمکی |
++| `parseArticleLabel` · `canonicalArticleLabel` · `canonicalSubpartLabel` | نرمال‌سازی برچسب |
++| `formatCitationKey` / `parseCitationKey` | کلید پایدار ارجاع: `doc/10-bis/note/2` |
++| `isValidIsoDate` · `parseIsoDate` · `isValidDocumentId` | اعتبارسنجی‌های کوچک |
++
++## قواعد داده (خلاصه)
++
++- **تاریخ:** فقط میلادی ISO `YYYY-MM-DD`، سال ۱۸۰۰–۲۲۰۰. جلالی در مرز تبدیل می‌شود، نه در این مدل.
++- **نسخه:** بازهٔ نیم‌باز `[validFrom, validTo)`؛ `validTo` صریح (`null` = بی‌پایان)؛ هم‌پوشانی و `validFrom` تکراری خطا؛ شکاف مجاز.
++- **ماده:** برچسب متعارف `10` · `10 مکرر` · `10 مکرر 2` · `واحده`. شناسه‌ها محاسبه می‌شوند؛ `۱۰` و `10` یک ماده‌اند.
++- **بازبینی:** پیش‌فرض `pending-legal-review`؛ `legally-verified` فقط با `reviewedBy` و `reviewedOn`.
++- **متن:** نویسهٔ کنترلی و علامت‌های جهت‌دهی (U+202A–202E، U+2066–2069) و BOM ممنوع؛ نیم‌فاصله و LRM/RLM مجاز؛ CRLF → LF.
++
++## مثال
++
++```ts
++const loaded = loadCorpusFromJson(text);
++if (!loaded.ok) return report(loaded.error); // [{code, path, message}, …]
++const index = buildCorpusIndex(loaded.value);
++const r = resolveCitation(index, { documentId: "sample-law", article: "۱۰ مکرر", subpart: null }, "2016-07-15");
++if (r.ok && r.value.status === "found" && r.value.verified) { /* قابل استناد */ }
++```
++
++## وقتی چیزی را تغییر می‌دهید
++- نوع سند/رأی/رابطهٔ تازه: فقط `types.ts` + تست‌ها + ADR (تصمیم مالک).
++- قاعدهٔ تازهٔ یکپارچگی: `integrity.ts` + تست «سخت‌گیری/یکپارچگی» + یک جهش در `tooling/mutation/legal-kb-schema.py`.
++- قرارداد (`index.ts`) را بدون کار جدا تغییر ندهید؛ `citation-verifier` و `legal-kb-store` به آن تکیه می‌کنند.
++
++## آزمون جهشی
++`python3 tooling/mutation/legal-kb-schema.py` — هر جهش باید تست را قرمز کند (۳۳ جهش؛ نتیجه در یادداشت ۰۰۰۵).
+diff --git a/src/modules/legal-kb-schema/dates.ts b/src/modules/legal-kb-schema/dates.ts
+new file mode 100644
+index 0000000..a19edd3
+--- /dev/null
++++ b/src/modules/legal-kb-schema/dates.ts
+@@ -0,0 +1,44 @@
++/**
++ * تاریخ میلادی ISO — اعتبارسنجی و مقایسه. داخلی (از index صادر نمی‌شود جز `isValidIsoDate`).
++ * عمداً مستقل از jalali-date است: registry این ماژول را فقط به shared-types وابسته کرده است.
++ */
++import { err, ok, type Result } from "@/modules/shared-types";
++import type { IsoDate } from "./types";
++
++/** حدود فنی (نه حقوقی): بیرون از این بازه تقریباً قطعاً خطای ورود داده است. */
++export const MIN_ISO_YEAR = 1800;
++export const MAX_ISO_YEAR = 2200;
++
++const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
++
++function isLeap(y: number): boolean {
++  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
++}
++
++function daysInMonth(y: number, m: number): number {
++  if (m === 2) return isLeap(y) ? 29 : 28;
++  return m === 4 || m === 6 || m === 9 || m === 11 ? 30 : 31;
++}
++
++export function isValidIsoDate(value: unknown): value is IsoDate {
++  if (typeof value !== "string") return false;
++  const m = ISO_RE.exec(value);
++  if (!m) return false;
++  const y = Number(m[1]);
++  const mo = Number(m[2]);
++  const d = Number(m[3]);
++  return y >= MIN_ISO_YEAR && y <= MAX_ISO_YEAR && mo >= 1 && mo <= 12 && d >= 1 && d <= daysInMonth(y, mo);
++}
++
++export function parseIsoDate(value: unknown): Result<IsoDate> {
++  if (typeof value !== "string") return err("INVALID_DATE", "تاریخ باید متن با قالب YYYY-MM-DD باشد.");
++  if (!isValidIsoDate(value)) {
++    return err("INVALID_DATE", `تاریخ «${value}» معتبر نیست؛ قالب درست YYYY-MM-DD (میلادی) و سال ${MIN_ISO_YEAR} تا ${MAX_ISO_YEAR} است.`);
++  }
++  return ok(value);
++}
++
++/** فقط برای تاریخ‌های اعتبارسنجی‌شده: رشتهٔ صفرپُرشده، پس ترتیب رشته‌ای = ترتیب زمانی. */
++export function compareIsoDates(a: IsoDate, b: IsoDate): -1 | 0 | 1 {
++  return a < b ? -1 : a > b ? 1 : 0;
++}
+diff --git a/src/modules/legal-kb-schema/index.ts b/src/modules/legal-kb-schema/index.ts
+new file mode 100644
+index 0000000..3aa68b4
+--- /dev/null
++++ b/src/modules/legal-kb-schema/index.ts
+@@ -0,0 +1,42 @@
++/** رابط عمومی legal-kb-schema؛ هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود. */
++export { loadCorpus, loadCorpusFromJson } from "./load";
++export { buildCorpusIndex, findArticle, findDocument, relationsFor, resolveCitation, rulingsCiting, versionsInForceAt } from "./lookup";
++export type { CorpusIndex, InForceEntry } from "./lookup";
++export {
++  canonicalArticleLabel,
++  canonicalSubpartLabel,
++  compareArticleLabels,
++  formatArticleLabel,
++  formatCitationKey,
++  isValidDocumentId,
++  parseArticleLabel,
++  parseCitationKey,
++} from "./label";
++export type { ArticleLabel } from "./label";
++export { isValidIsoDate, parseIsoDate } from "./dates";
++export { KB_LIMITS } from "./issues";
++export { DOCUMENT_KINDS, RELATION_TYPES, RULING_KINDS, SUBPART_KINDS } from "./types";
++export type {
++  Article,
++  ArticleVersion,
++  CitationRef,
++  Corpus,
++  CorpusIssue,
++  DocumentKind,
++  IsoDate,
++  IssueCode,
++  LawDocument,
++  NodeRef,
++  Provenance,
++  Relation,
++  RelationType,
++  Review,
++  ReviewStatus,
++  Ruling,
++  RulingKind,
++  SourceKind,
++  Subpart,
++  SubpartKind,
++  VersionLookup,
++} from "./types";
++export { FICTIONAL_SAMPLE_CORPUS } from "./sample-corpus";
+diff --git a/src/modules/legal-kb-schema/integrity.ts b/src/modules/legal-kb-schema/integrity.ts
+new file mode 100644
+index 0000000..a35b9ec
+--- /dev/null
++++ b/src/modules/legal-kb-schema/integrity.ts
+@@ -0,0 +1,104 @@
++/**
++ * یکپارچگی بین‌رکوردی روی Corpus تایپ‌دار (داخلی): یکتایی، ارجاع‌های معلق، بازه‌های نسخه، رابطه‌های متناقض.
++ * فقط وقتی اجرا می‌شود که شکل ورودی بی‌خطا باشد (تا مسئله‌های ثانویه نویز نسازند).
++ */
++import { compareIsoDates } from "./dates";
++import { addIssue, type Ctx } from "./issues";
++import type { ArticleVersion, Corpus, NodeRef } from "./types";
++
++const refText = (r: NodeRef) => (r.article === null ? r.documentId : `${r.documentId}/${r.article}`);
++
++function checkVersions(ctx: Ctx, versions: readonly ArticleVersion[], path: string): void {
++  versions.forEach((v, i) => {
++    const vp = `${path}.versions[${i}]`;
++    if (v.validTo !== null && compareIsoDates(v.validTo, v.validFrom) <= 0) {
++      addIssue(ctx, "INVALID_INTERVAL", `${vp}.validTo`, `validTo (${v.validTo}) باید پس از validFrom (${v.validFrom}) باشد؛ بازه نیم‌باز است و روز validTo دیگر معتبر نیست.`);
++    }
++    const seen = new Set<string>();
++    v.subparts.forEach((s, si) => {
++      const key = `${s.kind}:${s.label}`;
++      if (seen.has(key)) addIssue(ctx, "DUPLICATE", `${vp}.subparts[${si}]`, `تبصره/بند تکراری (${s.kind} ${s.label}).`);
++      seen.add(key);
++    });
++  });
++
++  // ترتیب پایدار بر اساس شروع؛ اگر هر جفتِ مجاور هم‌پوشانی نداشته باشد، هیچ جفتی ندارد.
++  const order = versions.map((_, i) => i).sort((a, b) => compareIsoDates(versions[a]!.validFrom, versions[b]!.validFrom) || a - b);
++  for (let k = 1; k < order.length; k++) {
++    const ai = order[k - 1] as number;
++    const bi = order[k] as number;
++    const a = versions[ai] as ArticleVersion;
++    const b = versions[bi] as ArticleVersion;
++    if (a.validFrom === b.validFrom) {
++      addIssue(ctx, "DUPLICATE", `${path}.versions[${bi}].validFrom`, `دو نسخه با validFrom یکسان (${b.validFrom}).`);
++    } else if (a.validTo === null || compareIsoDates(a.validTo, b.validFrom) > 0) {
++      addIssue(
++        ctx,
++        "VERSION_OVERLAP",
++        `${path}.versions[${ai}].validTo`,
++        a.validTo === null
++          ? `نسخهٔ بی‌پایان (validFrom ${a.validFrom}) با نسخهٔ بعدی (validFrom ${b.validFrom}) هم‌پوشان است؛ نسخهٔ قبلی باید با validTo بسته شود.`
++          : `بازهٔ نسخه‌ها هم‌پوشان است: validTo=${a.validTo} پس از validFrom=${b.validFrom} نسخهٔ بعدی.`,
++      );
++    }
++  }
++}
++
++export function checkIntegrity(corpus: Corpus, ctx: Ctx): void {
++  const articlesByDoc = new Map<string, Set<string>>();
++
++  corpus.documents.forEach((doc, di) => {
++    const dp = `documents[${di}]`;
++    if (articlesByDoc.has(doc.id)) addIssue(ctx, "DUPLICATE", `${dp}.id`, `شناسهٔ سند «${doc.id}» تکراری است.`);
++    const labels = articlesByDoc.get(doc.id) ?? new Set<string>();
++    if (!articlesByDoc.has(doc.id)) articlesByDoc.set(doc.id, labels);
++    const localSeen = new Set<string>();
++    doc.articles.forEach((a, ai) => {
++      const ap = `${dp}.articles[${ai}]`;
++      if (localSeen.has(a.label)) addIssue(ctx, "DUPLICATE", `${ap}.label`, `ماده «${a.label}» در سند «${doc.id}» تکراری است (ارقام فارسی/لاتین یکی حساب می‌شوند).`);
++      localSeen.add(a.label);
++      labels.add(a.label);
++      checkVersions(ctx, a.versions, ap);
++    });
++  });
++
++  const exists = (r: NodeRef, path: string): void => {
++    const labels = articlesByDoc.get(r.documentId);
++    if (!labels) addIssue(ctx, "DANGLING_REF", path, `سند «${r.documentId}» در پایگاه نیست.`);
++    else if (r.article !== null && !labels.has(r.article)) addIssue(ctx, "DANGLING_REF", path, `ماده «${r.article}» در سند «${r.documentId}» نیست.`);
++  };
++
++  const relKeys = new Set<string>();
++  const directional = new Set<string>(); // فقط repeals/replaces برای تناقض
++  corpus.relations.forEach((r, i) => {
++    const rp = `relations[${i}]`;
++    exists(r.from, `${rp}.from`);
++    exists(r.to, `${rp}.to`);
++    const from = refText(r.from);
++    const to = refText(r.to);
++    if (from === to) addIssue(ctx, "INVALID_FIELD", rp, "رابطه نمی‌تواند یک گره را به خودش وصل کند.");
++    const key = `${r.type}|${from}|${to}|${r.effectiveFrom ?? ""}`;
++    if (relKeys.has(key)) addIssue(ctx, "DUPLICATE", rp, "رابطهٔ تکراری (نوع، مبدأ، مقصد و تاریخ اثر یکسان).");
++    relKeys.add(key);
++    if (r.type === "repeals" || r.type === "replaces") {
++      if (directional.has(`${r.type}|${to}|${from}`)) {
++        addIssue(ctx, "CONTRADICTORY_RELATION", rp, `تناقض: «${to}» هم «${from}» را ${r.type === "repeals" ? "نسخ" : "جایگزین"} می‌کند و هم برعکس.`);
++      }
++      directional.add(`${r.type}|${from}|${to}`);
++    }
++  });
++
++  const rulingIds = new Set<string>();
++  corpus.rulings.forEach((g, i) => {
++    const gp = `rulings[${i}]`;
++    if (rulingIds.has(g.id)) addIssue(ctx, "DUPLICATE", `${gp}.id`, `شناسهٔ رأی «${g.id}» تکراری است.`);
++    rulingIds.add(g.id);
++    const cited = new Set<string>();
++    g.cites.forEach((c, ci) => {
++      exists(c, `${gp}.cites[${ci}]`);
++      const t = refText(c);
++      if (cited.has(t)) addIssue(ctx, "DUPLICATE", `${gp}.cites[${ci}]`, `ارجاع تکراری «${t}».`);
++      cited.add(t);
++    });
++  });
++}
+diff --git a/src/modules/legal-kb-schema/issues.ts b/src/modules/legal-kb-schema/issues.ts
+new file mode 100644
+index 0000000..1605dc6
+--- /dev/null
++++ b/src/modules/legal-kb-schema/issues.ts
+@@ -0,0 +1,38 @@
++/** گردآوری مسائل اعتبارسنجی (داخلی). همهٔ مسائل یک‌جا گزارش می‌شوند تا ingest بتواند یک‌باره همه را اصلاح کند. */
++import type { CorpusIssue, IssueCode } from "./types";
++
++/** سقف‌های فنی (نه حقوقی) برای جلوگیری از ورودی غول‌پیکر یا خصمانه. */
++export const KB_LIMITS = {
++  maxJsonChars: 50_000_000,
++  documents: 5_000,
++  articlesPerDocument: 5_000,
++  versionsPerArticle: 200,
++  subpartsPerVersion: 100,
++  relations: 100_000,
++  rulings: 100_000,
++  citesPerRuling: 200,
++  textChars: 200_000,
++  lineChars: 500,
++  urlChars: 2_048,
++  maxIssues: 100,
++} as const;
++
++export type Ctx = { readonly issues: CorpusIssue[]; truncated: boolean };
++
++export function newCtx(): Ctx {
++  return { issues: [], truncated: false };
++}
++
++export function addIssue(ctx: Ctx, code: IssueCode, path: string, message: string): void {
++  if (ctx.issues.length >= KB_LIMITS.maxIssues) {
++    ctx.truncated = true;
++    return;
++  }
++  ctx.issues.push({ code, path, message });
++}
++
++/** نتیجهٔ نهایی؛ اگر سقف پر شده یک مسئلهٔ پایانی می‌افزاید. */
++export function finishIssues(ctx: Ctx): readonly CorpusIssue[] {
++  if (!ctx.truncated) return ctx.issues;
++  return [...ctx.issues, { code: "LIMIT_EXCEEDED", path: "$", message: `بیش از ${KB_LIMITS.maxIssues} مسئله وجود دارد؛ بقیه نمایش داده نمی‌شود. ابتدا همین‌ها را اصلاح کنید.` }];
++}
+diff --git a/src/modules/legal-kb-schema/label.test.ts b/src/modules/legal-kb-schema/label.test.ts
+new file mode 100644
+index 0000000..9ab4157
+--- /dev/null
++++ b/src/modules/legal-kb-schema/label.test.ts
+@@ -0,0 +1,235 @@
++import { describe, expect, it } from "vitest";
++import { isValidIsoDate, parseIsoDate } from "./dates";
++import {
++  articleKey,
++  canonicalArticleLabel,
++  canonicalSubpartLabel,
++  compareArticleLabels,
++  formatArticleLabel,
++  formatCitationKey,
++  isValidDocumentId,
++  parseArticleKey,
++  parseArticleLabel,
++  parseCitationKey,
++  type ArticleLabel,
++} from "./label";
++
++const canon = (s: string) => {
++  const r = canonicalArticleLabel(s);
++  return r.ok ? r.value : `ERR:${r.error.code}`;
++};
++
++/** مولد شبه‌تصادفی قطعی (LCG)؛ تست‌ها باید تکرارپذیر باشند. */
++function lcg(seed: number) {
++  let s = seed >>> 0;
++  return (n: number) => {
++    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
++    return s % n;
++  };
++}
++
++describe("برچسب ماده: نرمال‌سازی به شکل متعارف", () => {
++  it("ارقام فارسی، عربی و لاتین یکی‌اند", () => {
++    expect(canon("۱۰")).toBe("10");
++    expect(canon("١٠")).toBe("10");
++    expect(canon("10")).toBe("10");
++    expect(canon("۰۱۰")).toBe("10"); // صفر پیشرو
++  });
++
++  it("پیشوند «ماده»/«اصل» و فاصله‌ها", () => {
++    expect(canon("ماده ۱۰")).toBe("10");
++    expect(canon("اصل ۴۴")).toBe("44");
++    expect(canon("  ماده   ۱۰  ")).toBe("10");
++    expect(canon("ماده\u200C۱۰")).toBe("10"); // نیم‌فاصله
++  });
++
++  it("مکرر (با ک/ی عربی و کشیده)", () => {
++    expect(canon("10 مکرر")).toBe("10 مکرر");
++    expect(canon("۱۰ مكرر")).toBe("10 مکرر");
++    expect(canon("ماده ۱۰ مکـــرر")).toBe("10 مکرر");
++    expect(canon("10 مکرر 2")).toBe("10 مکرر 2");
++    expect(canon("۱۰ مکرر ۲")).toBe("10 مکرر 2");
++    expect(canon("10 مکرر 99")).toBe("10 مکرر 99");
++  });
++
++  it("واحده", () => {
++    expect(canon("واحده")).toBe("واحده");
++    expect(canon("ماده واحده")).toBe("واحده");
++    expect(canon("ماده‌واحده")).toBe("واحده");
++  });
++
++  it("مرزها: ۱ و ۹۹۹۹۹ مجازند؛ ۰ و ۱۰۰۰۰۰ نه", () => {
++    expect(canon("1")).toBe("1");
++    expect(canon("99999")).toBe("99999");
++    expect(canon("0")).toBe("ERR:OUT_OF_RANGE");
++    expect(canon("100000")).toBe("ERR:INVALID_INPUT"); // ۶ رقم: الگو نمی‌خورد
++  });
++
++  it("شکل‌های مبهم یا ناشناخته = خطای صریح، نه حدس", () => {
++    for (const bad of ["", "   ", "ماده", "abc", "10 bis", "10مکرر", "10 مکرر 1", "10 مکرر 100", "-5", "1.5", "1e3", "10 مکرر مکرر", "ماده ماده 10", "10 مکرر x", "مکرر 10"]) {
++      expect(canon(bad).startsWith("ERR:"), bad).toBe(true);
++    }
++    expect(canon("10 مکرر 1")).toBe("ERR:OUT_OF_RANGE");
++    expect(canon("10 مکرر 0")).toBe("ERR:OUT_OF_RANGE");
++    expect(canon(5 as unknown as string)).toBe("ERR:INVALID_INPUT");
++  });
++
++  it("چند صفر پیشرو و رقم‌های مخلوط", () => {
++    expect(canon("۰۰۰۰۷")).toBe("7");
++    expect(canon("1۰")).toBe("10");
++  });
++});
++
++describe("برچسب ماده: رفت‌وبرگشت و ترتیب (خاصیت)", () => {
++  it("۲۰۰۰ برچسب تصادفی: format↔parse و key↔parseKey پایدارند", () => {
++    const rnd = lcg(7);
++    for (let i = 0; i < 2000; i++) {
++      const label: ArticleLabel =
++        rnd(10) === 0
++          ? { kind: "single" }
++          : { kind: "numbered", number: 1 + rnd(99999), repeat: rnd(3) === 0 ? 0 : rnd(2) === 0 ? 1 : 2 + rnd(98) };
++      const text = formatArticleLabel(label);
++      const back = parseArticleLabel(text);
++      expect(back.ok && back.value).toEqual(label);
++      const key = articleKey(label);
++      const back2 = parseArticleKey(key);
++      expect(back2.ok && back2.value).toEqual(label);
++      expect(/^[a-z0-9-]+$/.test(key)).toBe(true);
++    }
++  });
++
++  it("کلید یکتاست: دو برچسب متفاوت کلید یکسان ندارند", () => {
++    const rnd = lcg(11);
++    const seen = new Map<string, string>();
++    for (let i = 0; i < 3000; i++) {
++      const label: ArticleLabel = { kind: "numbered", number: 1 + rnd(40), repeat: rnd(4) };
++      const k = articleKey(label);
++      const f = formatArticleLabel(label);
++      if (seen.has(k)) expect(seen.get(k)).toBe(f);
++      seen.set(k, f);
++    }
++  });
++
++  it("ترتیب طبیعی: واحده < شماره < مکرر < مکرر ۲ < شمارهٔ بعد", () => {
++    const labels = ["11", "10 مکرر 2", "واحده", "10", "2", "10 مکرر", "1"];
++    const sorted = labels
++      .map((l) => parseArticleLabel(l))
++      .map((r) => (r.ok ? r.value : (null as never)))
++      .sort(compareArticleLabels)
++      .map(formatArticleLabel);
++    expect(sorted).toEqual(["واحده", "1", "2", "10", "10 مکرر", "10 مکرر 2", "11"]);
++  });
++
++  it("کلید غیرمتعارف رد می‌شود (برای هر ماده فقط یک کلید)", () => {
++    for (const bad of ["007", "10-bis-1", "10-bis-02", "10-bis-100", "10-BIS", "0", "10-bis-", "bis", "10 ", "-10", "single2"]) {
++      expect(parseArticleKey(bad).ok, bad).toBe(false);
++    }
++    expect(parseArticleKey(3 as unknown as string).ok).toBe(false);
++  });
++});
++
++describe("برچسب تبصره/بند", () => {
++  it("عدد و حروف فارسی", () => {
++    const f = (s: string) => {
++      const r = canonicalSubpartLabel(s);
++      return r.ok ? r.value : `ERR:${r.error.code}`;
++    };
++    expect(f("۲")).toBe("2");
++    expect(f("02")).toBe("2");
++    expect(f("٣")).toBe("3");
++    expect(f("الف")).toBe("الف");
++    expect(f(" ب ")).toBe("ب");
++    expect(f("ك")).toBe("ک"); // ک عربی
++    expect(f("0")).toBe("ERR:OUT_OF_RANGE");
++    expect(f("0000")).toBe("ERR:INVALID_INPUT");
++    expect(f("1000")).toBe("ERR:INVALID_INPUT");
++    expect(f("999")).toBe("999");
++    expect(f("a")).toBe("ERR:INVALID_INPUT");
++    expect(f("")).toBe("ERR:INVALID_INPUT");
++    expect(f("الف ب")).toBe("ERR:INVALID_INPUT");
++    expect(f("الفباپتثج")).toBe("ERR:INVALID_INPUT"); // ۸ حرف
++    expect(f(1 as unknown as string)).toBe("ERR:INVALID_INPUT");
++  });
++});
++
++describe("شناسهٔ سند", () => {
++  it("قالب و طول", () => {
++    expect(isValidDocumentId("sample-law")).toBe(true);
++    expect(isValidDocumentId("a")).toBe(true);
++    expect(isValidDocumentId("a".repeat(64))).toBe(true);
++    expect(isValidDocumentId("a".repeat(65))).toBe(false);
++    for (const bad of ["", "-a", "a-", "a--b", "A", "a_b", "a/b", "قانون", "a b", "a.b", "../x"]) expect(isValidDocumentId(bad), bad).toBe(false);
++    expect(isValidDocumentId(5)).toBe(false);
++    expect(isValidDocumentId(null)).toBe(false);
++  });
++});
++
++describe("کلید ارجاع", () => {
++  it("رفت‌وبرگشت با و بدون بخش", () => {
++    const refs = [
++      { documentId: "sample-law", article: "10", subpart: null },
++      { documentId: "sample-law", article: "10 مکرر", subpart: null },
++      { documentId: "x1", article: "10 مکرر 3", subpart: { kind: "note" as const, label: "2" } },
++      { documentId: "x1", article: "واحده", subpart: { kind: "clause" as const, label: "الف" } },
++    ];
++    const keys = refs.map((r) => {
++      const k = formatCitationKey(r);
++      return k.ok ? k.value : "ERR";
++    });
++    expect(keys).toEqual(["sample-law/10", "sample-law/10-bis", "x1/10-bis-3/note/2", "x1/single/clause/الف"]);
++    keys.forEach((k, i) => {
++      const back = parseCitationKey(k);
++      expect(back.ok && back.value).toEqual(refs[i]);
++    });
++  });
++
++  it("ورودی انسانی به شکل متعارف تبدیل می‌شود", () => {
++    const k = formatCitationKey({ documentId: "a", article: "ماده ۱۰ مکرر", subpart: { kind: "note", label: "۲" } });
++    expect(k.ok && k.value).toBe("a/10-bis/note/2");
++  });
++
++  it("کلید نامعتبر", () => {
++    for (const bad of ["", "a", "a/b/c", "a/10/foo/1", "A/10", "a/10/note/02", "a/10/note/x", "a/10/note/", "a/007", "a/10/note/1/extra", "/10"]) {
++      expect(parseCitationKey(bad).ok, bad).toBe(false);
++    }
++    expect(parseCitationKey(1 as unknown as string).ok).toBe(false);
++    expect(formatCitationKey({ documentId: "BAD", article: "1", subpart: null }).ok).toBe(false);
++    expect(formatCitationKey({ documentId: "a", article: "zz", subpart: null }).ok).toBe(false);
++    expect(formatCitationKey({ documentId: "a", article: "1", subpart: { kind: "foo" as "note", label: "1" } }).ok).toBe(false);
++    expect(formatCitationKey({ documentId: "a", article: "1", subpart: { kind: "note", label: "x" } }).ok).toBe(false);
++  });
++});
++
++describe("تاریخ میلادی ISO", () => {
++  it("کبیسه‌ها (قاعدهٔ ۴/۱۰۰/۴۰۰)", () => {
++    expect(isValidIsoDate("2000-02-29")).toBe(true);
++    expect(isValidIsoDate("2024-02-29")).toBe(true);
++    expect(isValidIsoDate("1900-02-29")).toBe(false);
++    expect(isValidIsoDate("2100-02-29")).toBe(false);
++    expect(isValidIsoDate("2023-02-29")).toBe(false);
++    expect(isValidIsoDate("2023-02-28")).toBe(true);
++  });
++
++  it("طول ماه‌ها و قالب", () => {
++    expect(isValidIsoDate("2024-04-30")).toBe(true);
++    expect(isValidIsoDate("2024-04-31")).toBe(false);
++    expect(isValidIsoDate("2024-12-31")).toBe(true);
++    for (const bad of ["2024-13-01", "2024-00-10", "2024-01-00", "2024-1-01", "2024-01-1", " 2024-01-01", "2024-01-01 ", "2024-01-01T00:00:00Z", "20240101", "۲۰۲۴-۰۱-۰۱", "", "2024/01/01"]) {
++      expect(isValidIsoDate(bad), bad).toBe(false);
++    }
++    expect(isValidIsoDate(20240101)).toBe(false);
++    expect(isValidIsoDate(null)).toBe(false);
++  });
++
++  it("حدود سال: ۱۸۰۰ تا ۲۲۰۰؛ تاریخ جلالی (۱۴۰۳) به‌اشتباه به‌جای میلادی رد می‌شود", () => {
++    expect(isValidIsoDate("1799-12-31")).toBe(false);
++    expect(isValidIsoDate("1800-01-01")).toBe(true);
++    expect(isValidIsoDate("2200-12-31")).toBe(true);
++    expect(isValidIsoDate("2201-01-01")).toBe(false);
++    expect(isValidIsoDate("1403-01-01")).toBe(false);
++    const r = parseIsoDate("1403-01-01");
++    expect(!r.ok && r.error.code).toBe("INVALID_DATE");
++    const r2 = parseIsoDate(5);
++    expect(!r2.ok && r2.error.code).toBe("INVALID_DATE");
++  });
++});
+diff --git a/src/modules/legal-kb-schema/label.ts b/src/modules/legal-kb-schema/label.ts
+new file mode 100644
+index 0000000..f216088
+--- /dev/null
++++ b/src/modules/legal-kb-schema/label.ts
+@@ -0,0 +1,180 @@
++/**
++ * برچسب ماده، برچسب تبصره/بند، شناسهٔ سند و کلید ارجاع — نرمال‌سازی و قالب متعارف.
++ *
++ * چرا نرمال‌سازی خودش را دارد؟ registry این ماژول را فقط به shared-types وابسته کرده (persian-text مجاز نیست)؛
++ * نیاز اینجا کوچک و بسته است (ارقام، ی/ک، نیم‌فاصله) و تست‌های جداگانه دارد.
++ *
++ * شکل‌های ماده که می‌پذیریم (همه‌چیز دیگر = خطای صریح، نه حدس):
++ *   `10` · `10 مکرر` · `10 مکرر 2` · `واحده` ،  با پیشوند اختیاری «ماده»/«اصل» و ارقام فارسی/عربی/لاتین.
++ * «مکرر ۲» یک امکان فنی است (شمارندهٔ دوم)؛ وجودش در قانون واقعی یکی از پرسش‌های باز برای حقوقدان است (ADR-0003).
++ */
++import { err, ok, type Result } from "@/modules/shared-types";
++import type { CitationRef, SubpartKind } from "./types";
++import { SUBPART_KINDS } from "./types";
++
++export type ArticleLabel =
++  | Readonly<{ kind: "numbered"; number: number; /** ۰ = بدون «مکرر»، ۱ = «مکرر»، n≥۲ = «مکرر n» */ repeat: number }>
++  | Readonly<{ kind: "single" }>;
++
++export const MAX_ARTICLE_NUMBER = 99999;
++export const MAX_REPEAT = 99;
++const REPEAT_WORD = "مکرر";
++
++const PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
++const ARABIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
++
++/** ارقام فارسی/عربی → لاتین، ی/ک عربی → فارسی، حذف کشیده و نویسه‌های نامرئی، نیم‌فاصله و فاصله‌های خاص → فاصلهٔ ساده. */
++export function normalizeLabelText(input: string): string {
++  let out = "";
++  for (const ch of input) {
++    const p = PERSIAN_DIGITS.indexOf(ch);
++    if (p >= 0) out += String(p);
++    else {
++      const a = ARABIC_DIGITS.indexOf(ch);
++      if (a >= 0) out += String(a);
++      else if (ch === "ي" || ch === "ى") out += "ی";
++      else if (ch === "ك") out += "ک";
++      else if (ch === "\u0640" || ch === "\u200E" || ch === "\u200F" || ch === "\u200B" || ch === "\uFEFF") out += "";
++      else if (/\s/.test(ch) || ch === "\u200C" || ch === "\u00A0") out += " ";
++      else out += ch;
++    }
++  }
++  return out.replace(/ +/g, " ").trim();
++}
++
++const ARTICLE_RE = new RegExp(`^(?:(?:ماده|اصل) )?(?:(\\d{1,5})(?: ${REPEAT_WORD}(?: (\\d{1,2}))?)?|واحده)$`);
++
++export function parseArticleLabel(input: string): Result<ArticleLabel> {
++  if (typeof input !== "string") return err("INVALID_INPUT", "برچسب ماده باید متن باشد.");
++  const s = normalizeLabelText(input);
++  if (s === "") return err("INVALID_INPUT", "برچسب ماده خالی است.");
++  const m = ARTICLE_RE.exec(s);
++  if (!m) {
++    return err("INVALID_INPUT", `برچسب ماده «${input}» شناخته نشد؛ شکل‌های پذیرفته: «۱۰»، «۱۰ مکرر»، «۱۰ مکرر ۲»، «واحده».`);
++  }
++  if (m[1] === undefined) return ok({ kind: "single" });
++  const number = Number(m[1]);
++  if (number < 1 || number > MAX_ARTICLE_NUMBER) {
++    return err("OUT_OF_RANGE", `شمارهٔ ماده باید از ۱ تا ${MAX_ARTICLE_NUMBER} باشد.`);
++  }
++  const hasRepeat = s.includes(` ${REPEAT_WORD}`);
++  let repeat = 0;
++  if (hasRepeat) {
++    if (m[2] === undefined) repeat = 1;
++    else {
++      repeat = Number(m[2]);
++      // «مکرر ۱» با «مکرر» یکی است و دو شکل برای یک چیز نمی‌پذیریم؛ «مکرر ۰» بی‌معنی است.
++      if (repeat < 2 || repeat > MAX_REPEAT) return err("OUT_OF_RANGE", `شمارندهٔ «مکرر» باید از ۲ تا ${MAX_REPEAT} باشد (برای حالت اول فقط «مکرر» بنویسید).`);
++    }
++  }
++  return ok({ kind: "numbered", number, repeat });
++}
++
++/** شکل متعارف برای ذخیره و مقایسه: `10`، `10 مکرر`، `10 مکرر 2`، `واحده`. */
++export function formatArticleLabel(label: ArticleLabel): string {
++  if (label.kind === "single") return "واحده";
++  if (label.repeat === 0) return String(label.number);
++  if (label.repeat === 1) return `${label.number} ${REPEAT_WORD}`;
++  return `${label.number} ${REPEAT_WORD} ${label.repeat}`;
++}
++
++export function canonicalArticleLabel(input: string): Result<string> {
++  const r = parseArticleLabel(input);
++  return r.ok ? ok(formatArticleLabel(r.value)) : r;
++}
++
++/** ترتیب طبیعی: «واحده» پیش از همه؛ سپس شماره؛ سپس بدون‌مکرر < مکرر < مکرر ۲ … */
++export function compareArticleLabels(a: ArticleLabel, b: ArticleLabel): number {
++  if (a.kind === "single") return b.kind === "single" ? 0 : -1;
++  if (b.kind === "single") return 1;
++  return a.number - b.number || a.repeat - b.repeat;
++}
++
++/** کلید ASCII برای ذخیره/نشانی: `10`، `10-bis`، `10-bis-2`، `single`. */
++export function articleKey(label: ArticleLabel): string {
++  if (label.kind === "single") return "single";
++  if (label.repeat === 0) return String(label.number);
++  if (label.repeat === 1) return `${label.number}-bis`;
++  return `${label.number}-bis-${label.repeat}`;
++}
++
++export function parseArticleKey(key: string): Result<ArticleLabel> {
++  if (typeof key !== "string") return err("INVALID_INPUT", "کلید ماده باید متن باشد.");
++  if (key === "single") return ok({ kind: "single" });
++  const m = /^(\d{1,5})(?:-bis(?:-(\d{1,2}))?)?$/.exec(key);
++  if (!m) return err("INVALID_INPUT", `کلید ماده «${key}» معتبر نیست.`);
++  const number = Number(m[1]);
++  if (number < 1 || number > MAX_ARTICLE_NUMBER) return err("OUT_OF_RANGE", "شمارهٔ ماده خارج از حد است.");
++  const repeat = key.indexOf("-bis") < 0 ? 0 : m[2] === undefined ? 1 : Number(m[2]);
++  if (repeat > MAX_REPEAT || (m[2] !== undefined && repeat < 2)) return err("OUT_OF_RANGE", "شمارندهٔ «مکرر» خارج از حد است.");
++  // قالب متعارف: بدون صفر پیشرو (`07` رد می‌شود تا یک ماده دو کلید نداشته باشد)
++  if (articleKey({ kind: "numbered", number, repeat }) !== key) return err("INVALID_INPUT", `کلید ماده «${key}» متعارف نیست.`);
++  return ok({ kind: "numbered", number, repeat });
++}
++
++// ───────────── تبصره / بند ─────────────
++
++/** حروف مجاز برچسب بند (الف، ب، پ، ت …). عمداً فهرست صریح، نه بازه (بازهٔ یونیکد ارقام عربی را هم می‌گیرد). */
++const LABEL_LETTERS = "آابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی";
++const SUBPART_LABEL_RE = new RegExp(`^(?:\\d{1,3}|[${LABEL_LETTERS}]{1,6})$`);
++
++export function canonicalSubpartLabel(input: string): Result<string> {
++  if (typeof input !== "string") return err("INVALID_INPUT", "برچسب تبصره/بند باید متن باشد.");
++  const s = normalizeLabelText(input);
++  if (!SUBPART_LABEL_RE.test(s)) {
++    return err("INVALID_INPUT", `برچسب تبصره/بند «${input}» شناخته نشد؛ فقط عدد (حداکثر ۳ رقم) یا حروف فارسی (مثل «الف»).`);
++  }
++  if (/^\d+$/.test(s)) {
++    const n = Number(s);
++    if (n < 1) return err("OUT_OF_RANGE", "شمارهٔ تبصره/بند باید از ۱ باشد.");
++    return ok(String(n)); // «۰۲» → «2»
++  }
++  return ok(s);
++}
++
++// ───────────── شناسهٔ سند ─────────────
++
++export const MAX_DOCUMENT_ID_LENGTH = 64;
++const DOC_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
++
++export function isValidDocumentId(id: unknown): id is string {
++  return typeof id === "string" && id.length <= MAX_DOCUMENT_ID_LENGTH && DOC_ID_RE.test(id);
++}
++
++/** شناسهٔ رکوردهای دیگر (رأی) با همان قاعدهٔ شناسهٔ سند. */
++export const isValidRecordId = isValidDocumentId;
++
++// ───────────── کلید ارجاع ─────────────
++
++/**
++ * کلید ارجاع (پایدار، ASCII به‌جز برچسب حروفی بند):
++ *   `sample-law/10-bis` یا `sample-law/10/note/2` یا `sample-law/10/clause/الف`.
++ */
++export function formatCitationKey(ref: CitationRef): Result<string> {
++  if (!isValidDocumentId(ref.documentId)) return err("INVALID_INPUT", "شناسهٔ سند نامعتبر است.");
++  const label = parseArticleLabel(ref.article);
++  if (!label.ok) return label;
++  const base = `${ref.documentId}/${articleKey(label.value)}`;
++  if (ref.subpart === null) return ok(base);
++  if (!SUBPART_KINDS.includes(ref.subpart.kind)) return err("INVALID_INPUT", "نوع تبصره/بند نامعتبر است.");
++  const sub = canonicalSubpartLabel(ref.subpart.label);
++  if (!sub.ok) return sub;
++  return ok(`${base}/${ref.subpart.kind}/${sub.value}`);
++}
++
++export function parseCitationKey(key: string): Result<CitationRef> {
++  if (typeof key !== "string") return err("PARSE_ERROR", "کلید ارجاع باید متن باشد.");
++  const parts = key.split("/");
++  if (parts.length !== 2 && parts.length !== 4) return err("PARSE_ERROR", "کلید ارجاع باید «سند/ماده» یا «سند/ماده/نوع/برچسب» باشد.");
++  const [documentId, articlePart, kindPart, labelPart] = parts as [string, string, string | undefined, string | undefined];
++  if (!isValidDocumentId(documentId)) return err("PARSE_ERROR", "شناسهٔ سند در کلید نامعتبر است.");
++  const label = parseArticleKey(articlePart);
++  if (!label.ok) return err("PARSE_ERROR", label.error.message);
++  const article = formatArticleLabel(label.value);
++  if (kindPart === undefined || labelPart === undefined) return ok({ documentId, article, subpart: null });
++  if (kindPart !== "note" && kindPart !== "clause") return err("PARSE_ERROR", "نوع بخش در کلید باید note یا clause باشد.");
++  const sub = canonicalSubpartLabel(labelPart);
++  // برچسب باید همان شکل متعارف باشد (کلید یکتا)
++  if (!sub.ok || sub.value !== labelPart) return err("PARSE_ERROR", "برچسب بخش در کلید متعارف نیست.");
++  return ok({ documentId, article, subpart: { kind: kindPart as SubpartKind, label: sub.value } });
++}
+diff --git a/src/modules/legal-kb-schema/load.test.ts b/src/modules/legal-kb-schema/load.test.ts
+new file mode 100644
+index 0000000..394c8be
+--- /dev/null
++++ b/src/modules/legal-kb-schema/load.test.ts
+@@ -0,0 +1,508 @@
++import { describe, expect, it } from "vitest";
++import { KB_LIMITS } from "./issues";
++import { loadCorpus, loadCorpusFromJson } from "./load";
++import { FICTIONAL_SAMPLE_CORPUS } from "./sample-corpus";
++import type { Corpus, CorpusIssue, IssueCode } from "./types";
++
++type J = Record<string, any>;
++
++const fresh = (): J => JSON.parse(JSON.stringify(FICTIONAL_SAMPLE_CORPUS));
++
++function issuesOf(input: unknown): readonly CorpusIssue[] {
++  const r = loadCorpus(input);
++  return r.ok ? [] : r.error;
++}
++function mutated(fn: (c: J) => void): readonly CorpusIssue[] {
++  const c = fresh();
++  fn(c);
++  return issuesOf(c);
++}
++const codes = (list: readonly CorpusIssue[]) => list.map((i) => `${i.code}@${i.path}`);
++function expectIssue(list: readonly CorpusIssue[], code: IssueCode, path: string) {
++  expect(codes(list), `انتظار ${code}@${path}`).toContain(`${code}@${path}`);
++}
++function loaded(input: unknown): Corpus {
++  const r = loadCorpus(input);
++  if (!r.ok) throw new Error(JSON.stringify(r.error));
++  return r.value;
++}
++
++describe("نمونهٔ ساختگی", () => {
++  it("بی‌خطا بارگذاری می‌شود و شمارش‌ها درست است", () => {
++    const c = loaded(fresh());
++    expect(c.documents.map((d) => d.id)).toEqual(["sample-law", "sample-single-act", "sample-regulation"]);
++    expect(c.documents[0]?.articles.map((a) => a.label)).toEqual(["1", "2", "2 مکرر"]);
++    expect(c.documents[0]?.articles[0]?.versions).toHaveLength(3);
++    expect(c.relations).toHaveLength(3);
++    expect(c.rulings).toHaveLength(1);
++  });
++
++  it("رفت‌وبرگشت JSON: بارگذاریِ خروجی همان خروجی را می‌دهد (خودتوان)", () => {
++    const c = loaded(fresh());
++    expect(loaded(JSON.parse(JSON.stringify(c)))).toEqual(c);
++  });
++
++  it("ترتیب متعارف: مواد و نسخه‌ها هر طور بیایند مرتب می‌شوند؛ ترتیب سندها حفظ می‌شود", () => {
++    const base = loaded(fresh());
++    const s = fresh();
++    s.documents[0].articles.reverse();
++    s.documents[0].articles[2].versions.reverse(); // ماده ۱ (اکنون آخر)
++    expect(loaded(s)).toEqual(base);
++  });
++
++  it("ورودی اصلی دست‌نخورده می‌ماند (بدون جهش)", () => {
++    const s = fresh();
++    const before = JSON.stringify(s);
++    loaded(s);
++    expect(JSON.stringify(s)).toBe(before);
++  });
++
++  it("رأی و رابطه اختیاری‌اند؛ سند بی‌ماده مجاز است", () => {
++    const c = loaded({ documents: [{ ...fresh().documents[0], articles: [] }] });
++    expect(c.relations).toEqual([]);
++    expect(c.rulings).toEqual([]);
++  });
++});
++
++describe("سخت‌گیری شکل", () => {
++  it("ریشه باید شیء باشد", () => {
++    for (const bad of [null, undefined, [], "x", 5, true]) {
++      const list = issuesOf(bad);
++      expect(list.map((i) => i.code)).toEqual(["INVALID_FIELD"]);
++    }
++    class Foo {
++      documents = [];
++    }
++    expect(issuesOf(new Foo()).map((i) => i.code)).toEqual(["INVALID_FIELD"]);
++    expect(issuesOf(Object.assign(Object.create(null), { documents: [] }))).toEqual([]);
++  });
++
++  it("کلید ناشناخته در هر سطح (غلط املایی بی‌صدا پذیرفته نمی‌شود)", () => {
++    expectIssue(mutated((c) => (c.extra = 1)), "UNKNOWN_FIELD", "$.extra");
++    expectIssue(mutated((c) => (c.documents[0].extra = 1)), "UNKNOWN_FIELD", "documents[0].extra");
++    expectIssue(mutated((c) => (c.documents[0].articles[0].extra = 1)), "UNKNOWN_FIELD", "documents[0].articles[0].extra");
++    expectIssue(
++      mutated((c) => {
++        const v = c.documents[0].articles[0].versions[0];
++        v.validTO = v.validTo;
++        delete v.validTo;
++      }),
++      "UNKNOWN_FIELD",
++      "documents[0].articles[0].versions[0].validTO",
++    );
++    expectIssue(mutated((c) => (c.documents[0].articles[0].versions[0].provenance.x = 1)), "UNKNOWN_FIELD", "documents[0].articles[0].versions[0].provenance.x");
++    expectIssue(mutated((c) => (c.documents[0].articles[0].versions[0].provenance.review.x = 1)), "UNKNOWN_FIELD", "documents[0].articles[0].versions[0].provenance.review.x");
++    expectIssue(mutated((c) => (c.relations[0].x = 1)), "UNKNOWN_FIELD", "relations[0].x");
++    expectIssue(mutated((c) => (c.relations[0].from.x = 1)), "UNKNOWN_FIELD", "relations[0].from.x");
++    expectIssue(mutated((c) => (c.rulings[0].x = 1)), "UNKNOWN_FIELD", "rulings[0].x");
++    expectIssue(mutated((c) => (c.documents[0].articles[1].versions[0].subparts[0].x = 1)), "UNKNOWN_FIELD", "documents[0].articles[1].versions[0].subparts[0].x");
++  });
++
++  it("«__proto__» از JSON.parse کلید ناشناخته است و Object.prototype آلوده نمی‌شود", () => {
++    const input = JSON.parse('{"documents":[],"__proto__":{"polluted":true}}');
++    expectIssue(issuesOf(input), "UNKNOWN_FIELD", "$.__proto__");
++    expect(({} as J).polluted).toBeUndefined();
++  });
++
++  it("validTo باید صریح بیاید (حذف = خطا؛ null = بی‌پایان)", () => {
++    expectIssue(mutated((c) => delete c.documents[0].articles[0].versions[2].validTo), "MISSING_FIELD", "documents[0].articles[0].versions[2].validTo");
++    expectIssue(mutated((c) => (c.documents[0].articles[0].versions[2].validTo = undefined)), "MISSING_FIELD", "documents[0].articles[0].versions[2].validTo");
++    expect(mutated((c) => (c.documents[0].articles[0].versions[2].validTo = null))).toEqual([]);
++  });
++
++  it("effectiveFrom رابطه باید صریح بیاید", () => {
++    expectIssue(mutated((c) => delete c.relations[0].effectiveFrom), "MISSING_FIELD", "relations[0].effectiveFrom");
++    expect(mutated((c) => (c.relations[0].effectiveFrom = null))).toEqual([]);
++  });
++
++  it("فیلدهای الزامی", () => {
++    expectIssue(mutated((c) => delete c.documents), "MISSING_FIELD", "$.documents");
++    expectIssue(mutated((c) => delete c.documents[0].id), "MISSING_FIELD", "documents[0].id");
++    expectIssue(mutated((c) => delete c.documents[0].kind), "MISSING_FIELD", "documents[0].kind");
++    expectIssue(mutated((c) => delete c.documents[0].title), "MISSING_FIELD", "documents[0].title");
++    expectIssue(mutated((c) => delete c.documents[0].provenance), "MISSING_FIELD", "documents[0].provenance");
++    expectIssue(mutated((c) => delete c.documents[0].articles), "MISSING_FIELD", "documents[0].articles");
++    expectIssue(mutated((c) => delete c.documents[0].articles[0].label), "MISSING_FIELD", "documents[0].articles[0].label");
++    expectIssue(mutated((c) => delete c.documents[0].articles[0].versions), "MISSING_FIELD", "documents[0].articles[0].versions");
++    expectIssue(mutated((c) => (c.documents[0].articles[0].versions = [])), "MISSING_FIELD", "documents[0].articles[0].versions");
++    expectIssue(mutated((c) => delete c.documents[0].articles[0].versions[0].validFrom), "MISSING_FIELD", "documents[0].articles[0].versions[0].validFrom");
++    expectIssue(mutated((c) => delete c.documents[0].articles[0].versions[0].text), "MISSING_FIELD", "documents[0].articles[0].versions[0].text");
++    expectIssue(mutated((c) => delete c.documents[0].articles[0].versions[0].provenance), "MISSING_FIELD", "documents[0].articles[0].versions[0].provenance");
++    expectIssue(mutated((c) => delete c.documents[0].provenance.sourceName), "MISSING_FIELD", "documents[0].provenance.sourceName");
++    expectIssue(mutated((c) => delete c.documents[0].provenance.sourceKind), "MISSING_FIELD", "documents[0].provenance.sourceKind");
++    expectIssue(mutated((c) => delete c.relations[0].from), "MISSING_FIELD", "relations[0].from");
++    expectIssue(mutated((c) => delete c.relations[0].to), "MISSING_FIELD", "relations[0].to");
++    expectIssue(mutated((c) => delete c.relations[0].type), "MISSING_FIELD", "relations[0].type");
++    expectIssue(mutated((c) => delete c.rulings[0].text), "MISSING_FIELD", "rulings[0].text");
++    expectIssue(mutated((c) => delete c.rulings[0].issuedOn), "MISSING_FIELD", "rulings[0].issuedOn");
++    expectIssue(mutated((c) => delete c.rulings[0].id), "MISSING_FIELD", "rulings[0].id");
++    expectIssue(mutated((c) => delete c.documents[0].articles[1].versions[0].subparts[0].text), "MISSING_FIELD", "documents[0].articles[1].versions[0].subparts[0].text");
++    expectIssue(mutated((c) => delete c.documents[0].articles[1].versions[0].subparts[0].label), "MISSING_FIELD", "documents[0].articles[1].versions[0].subparts[0].label");
++  });
++
++  it("نوع‌های نادرست", () => {
++    expectIssue(mutated((c) => (c.documents = {})), "INVALID_FIELD", "$.documents");
++    expectIssue(mutated((c) => (c.documents[0].articles = "x")), "INVALID_FIELD", "documents[0].articles");
++    expectIssue(mutated((c) => (c.documents[0].id = 5)), "INVALID_FIELD", "documents[0].id");
++    expectIssue(mutated((c) => (c.documents[0].title = 5)), "INVALID_FIELD", "documents[0].title");
++    expectIssue(mutated((c) => (c.documents[0].articles[0].versions[0].text = ["x"])), "INVALID_FIELD", "documents[0].articles[0].versions[0].text");
++    expectIssue(mutated((c) => (c.documents[0].articles[0].label = 10)), "INVALID_FIELD", "documents[0].articles[0].label");
++    expectIssue(mutated((c) => (c.documents[0].articles[0].versions[0] = 5)), "INVALID_FIELD", "documents[0].articles[0].versions[0]");
++    expectIssue(mutated((c) => (c.documents[0].provenance = "x")), "INVALID_FIELD", "documents[0].provenance");
++    expectIssue(mutated((c) => (c.documents[0].articles[1].versions[0].subparts = {})), "INVALID_FIELD", "documents[0].articles[1].versions[0].subparts");
++  });
++
++  it("شمارهٔ enum نامعتبر", () => {
++    expectIssue(mutated((c) => (c.documents[0].kind = "law")), "INVALID_FIELD", "documents[0].kind");
++    expectIssue(mutated((c) => (c.relations[0].type = "deletes")), "INVALID_FIELD", "relations[0].type");
++    expectIssue(mutated((c) => (c.rulings[0].kind = "x")), "INVALID_FIELD", "rulings[0].kind");
++    expectIssue(mutated((c) => (c.documents[0].provenance.sourceKind = "wiki")), "INVALID_FIELD", "documents[0].provenance.sourceKind");
++    expectIssue(mutated((c) => (c.documents[0].articles[1].versions[0].subparts[0].kind = "para")), "INVALID_FIELD", "documents[0].articles[1].versions[0].subparts[0].kind");
++    expectIssue(mutated((c) => (c.documents[0].provenance.review.status = "ok")), "INVALID_FIELD", "documents[0].provenance.review.status");
++  });
++
++  it("شناسه‌ها", () => {
++    for (const bad of ["Sample", "a b", "a_b", "-a", "قانون", "", "a".repeat(65)]) {
++      expectIssue(mutated((c) => (c.documents[0].id = bad)), "INVALID_FIELD", "documents[0].id");
++    }
++    expectIssue(mutated((c) => (c.rulings[0].id = "Bad Id")), "INVALID_FIELD", "rulings[0].id");
++    expectIssue(mutated((c) => (c.relations[0].from.documentId = "Bad")), "INVALID_FIELD", "relations[0].from.documentId");
++  });
++});
++
++describe("تاریخ‌ها", () => {
++  const vf = (c: J) => c.documents[0].articles[0].versions[0];
++  it("تاریخ ناممکن، قالب غلط و جلالی به‌جای میلادی", () => {
++    for (const bad of ["2024-02-30", "2023-02-29", "2024-13-01", "1403-01-01", "۲۰۲۴-۰۱-۰۱", "2024/01/01", "", 20240101, null]) {
++      expectIssue(mutated((c) => (vf(c).validFrom = bad)), bad === null ? "INVALID_FIELD" : "INVALID_FIELD", "documents[0].articles[0].versions[0].validFrom");
++    }
++  });
++  it("تاریخ اختیاری ناممکن", () => {
++    expectIssue(mutated((c) => (c.documents[0].enactedOn = "2001-02-30")), "INVALID_FIELD", "documents[0].enactedOn");
++    expectIssue(mutated((c) => (c.documents[0].provenance.retrievedOn = "1404-01-01")), "INVALID_FIELD", "documents[0].provenance.retrievedOn");
++    expectIssue(mutated((c) => (c.relations[0].effectiveFrom = "x")), "INVALID_FIELD", "relations[0].effectiveFrom");
++    expect(mutated((c) => (c.documents[0].enactedOn = null))).toEqual([]);
++    expect(mutated((c) => delete c.documents[0].enactedOn)).toEqual([]);
++  });
++});
++
++describe("متن و نویسه‌های خطرناک", () => {
++  const text = (c: J) => c.documents[0].articles[0].versions[0];
++  const path = "documents[0].articles[0].versions[0].text";
++
++  it("متن خالی یا فقط فاصله", () => {
++    for (const bad of ["", "   ", "\n\t "]) expectIssue(mutated((c) => (text(c).text = bad)), "INVALID_FIELD", path);
++  });
++
++  it("نویسهٔ کنترلی، BOM و علامت‌های جهت‌دهی Trojan-Source رد می‌شوند", () => {
++    for (const bad of ["a\u0000b", "a\u0007b", "a\u001Bb", "a\u007Fb", "a\u0085b", "a\u202Eb", "a\u202Ab", "a\u2066b", "a\u2069b", "a\uFEFFb", "a\rb".replace("\r", "\u000B")]) {
++      expectIssue(mutated((c) => (text(c).text = bad)), "INVALID_FIELD", path);
++    }
++  });
++
++  it("نیم‌فاصله، LRM/RLM، تب و خط‌جدید مجازند؛ CRLF به LF تبدیل و دو سر برش می‌خورد", () => {
++    const c = fresh();
++    text(c).text = "  می\u200Cخواهد\u200F؛ یک\u200E\tدو\r\nسه\rچهار  ";
++    const out = loaded(c);
++    expect(out.documents[0]?.articles[0]?.versions[0]?.text).toBe("می\u200Cخواهد\u200F؛ یک\u200E\tدو\nسه\nچهار");
++  });
++
++  it("فیلد تک‌خطی نباید خط‌جدید داشته باشد و دو سرش برش می‌خورد", () => {
++    expectIssue(mutated((c) => (c.documents[0].title = "الف\nب")), "INVALID_FIELD", "documents[0].title");
++    const c = fresh();
++    c.documents[0].title = "  عنوان  ";
++    expect(loaded(c).documents[0]?.title).toBe("عنوان");
++  });
++
++  it("سقف طول متن و عنوان", () => {
++    expect(mutated((c) => (text(c).text = "ا".repeat(KB_LIMITS.textChars)))).toEqual([]);
++    expectIssue(mutated((c) => (text(c).text = "ا".repeat(KB_LIMITS.textChars + 1))), "LIMIT_EXCEEDED", path);
++    expectIssue(mutated((c) => (c.documents[0].title = "ا".repeat(301))), "LIMIT_EXCEEDED", "documents[0].title");
++    expect(mutated((c) => (c.documents[0].title = "ا".repeat(300)))).toEqual([]);
++  });
++});
++
++describe("منبع، نشانی و بازبینی", () => {
++  const prov = (c: J) => c.documents[0].articles[0].versions[1].provenance;
++  const ppath = "documents[0].articles[0].versions[1].provenance";
++
++  it("نشانی فقط http/https بدون فاصله", () => {
++    for (const bad of ["javascript:alert(1)", "ftp://x.ir", "https://x.ir/a b", "//x.ir", "x.ir", "https://", 5, `https://x.ir/${"a".repeat(2100)}`]) {
++      expectIssue(mutated((c) => (prov(c).sourceUrl = bad)), "INVALID_FIELD", `${ppath}.sourceUrl`);
++    }
++    expect(mutated((c) => (prov(c).sourceUrl = "https://example.org/a?b=c"))).toEqual([]);
++    expect(mutated((c) => (prov(c).sourceUrl = null))).toEqual([]);
++  });
++
++  it("review حذف‌شده = تأییدنشده (پیش‌فرض امن)", () => {
++    const c = fresh();
++    delete prov(c).review;
++    const v = loaded(c).documents[0]?.articles[0]?.versions[1];
++    expect(v?.provenance.review).toEqual({ status: "pending-legal-review", reviewedBy: null, reviewedOn: null });
++  });
++
++  it("تأییدشده باید نام و تاریخ بازبین داشته باشد", () => {
++    expectIssue(mutated((c) => (prov(c).review = { status: "legally-verified" })), "REVIEW_INCONSISTENT", `${ppath}.review`);
++    expectIssue(mutated((c) => (prov(c).review = { status: "legally-verified", reviewedBy: "الف" })), "REVIEW_INCONSISTENT", `${ppath}.review`);
++    expectIssue(mutated((c) => (prov(c).review = { status: "legally-verified", reviewedOn: "2025-01-01" })), "REVIEW_INCONSISTENT", `${ppath}.review`);
++    expect(mutated((c) => (prov(c).review = { status: "legally-verified", reviewedBy: "الف", reviewedOn: "2025-01-01" }))).toEqual([]);
++  });
++
++  it("تأییدنشده نباید نام یا تاریخ بازبین داشته باشد (وضعیت ناسازگار)", () => {
++    expectIssue(mutated((c) => (prov(c).review = { status: "pending-legal-review", reviewedBy: "الف" })), "REVIEW_INCONSISTENT", `${ppath}.review`);
++    expectIssue(mutated((c) => (prov(c).review = { status: "pending-legal-review", reviewedOn: "2025-01-01" })), "REVIEW_INCONSISTENT", `${ppath}.review`);
++  });
++});
++
++describe("یکپارچگی: مواد و نسخه‌ها", () => {
++  const ver = (c: J, i: number) => c.documents[0].articles[0].versions[i];
++  const vpath = (i: number) => `documents[0].articles[0].versions[${i}]`;
++
++  it("برچسب ماده به شکل متعارف ذخیره می‌شود", () => {
++    const c = fresh();
++    c.documents[0].articles[2].label = "ماده ۲ مكرر";
++    expect(loaded(c).documents[0]?.articles.map((a) => a.label)).toEqual(["1", "2", "2 مکرر"]);
++  });
++
++  it("مادهٔ تکراری (حتی با رقم فارسی)", () => {
++    expectIssue(
++      mutated((c) => {
++        c.documents[0].articles[1].label = "۱";
++      }),
++      "DUPLICATE",
++      "documents[0].articles[1].label",
++    );
++  });
++
++  it("بازه: validTo باید پس از validFrom باشد (نیم‌باز)", () => {
++    expectIssue(mutated((c) => (ver(c, 0).validTo = ver(c, 0).validFrom)), "INVALID_INTERVAL", `${vpath(0)}.validTo`);
++    expectIssue(mutated((c) => (ver(c, 0).validTo = "2000-01-01")), "INVALID_INTERVAL", `${vpath(0)}.validTo`);
++  });
++
++  it("هم‌پوشانی یک روزه خطاست؛ نسخه‌های چسبیده و شکاف‌دار مجازند", () => {
++    // نسخهٔ ۰ تا ۲۰۱۰-۰۶-۰۱؛ یک روز جلوتر ⇒ هم‌پوشان
++    expectIssue(mutated((c) => (ver(c, 0).validTo = "2010-06-02")), "VERSION_OVERLAP", `${vpath(0)}.validTo`);
++    // چسبیده (پیش‌فرض نمونه) و شکاف‌دار (نسخهٔ ۱ → ۲) مجازند: نمونه بی‌خطاست
++    expect(issuesOf(fresh())).toEqual([]);
++    // کوتاه‌کردن یک روزه: شکاف می‌شود، خطا نیست
++    expect(mutated((c) => (ver(c, 0).validTo = "2010-05-31"))).toEqual([]);
++  });
++
++  it("نسخهٔ بی‌پایان پیش از نسخهٔ بعدی", () => {
++    expectIssue(mutated((c) => (ver(c, 0).validTo = null)), "VERSION_OVERLAP", `${vpath(0)}.validTo`);
++  });
++
++  it("درج نسخه‌ای درون بازهٔ نسخهٔ دیگر (هم‌پوشانی غیرمجاور) گرفته می‌شود", () => {
++    const c = fresh();
++    c.documents[0].articles[0].versions.push({ ...ver(c, 1), validFrom: "2005-01-01", validTo: "2006-01-01", provenance: ver(c, 1).provenance });
++    expectIssue(issuesOf(c), "VERSION_OVERLAP", `${vpath(0)}.validTo`);
++  });
++
++  it("validFrom یکسان = تکراری", () => {
++    expectIssue(mutated((c) => (ver(c, 1).validFrom = ver(c, 0).validFrom)), "DUPLICATE", `${vpath(1)}.validFrom`);
++  });
++
++  it("تبصره/بند تکراری (۲ و ۲ فارسی یکی‌اند؛ نوع متفاوت یکی نیست)", () => {
++    const sub = (c: J) => c.documents[0].articles[1].versions[0].subparts;
++    expectIssue(mutated((c) => sub(c).push({ kind: "note", label: "۱", text: "تکرار" })), "DUPLICATE", "documents[0].articles[1].versions[0].subparts[3]");
++    expect(mutated((c) => sub(c).push({ kind: "clause", label: "1", text: "نوع متفاوت، برچسب یکسان" }))).toEqual([]);
++    expectIssue(mutated((c) => (sub(c)[0].label = "x")), "INVALID_FIELD", "documents[0].articles[1].versions[0].subparts[0].label");
++  });
++
++  it("سند تکراری", () => {
++    expectIssue(mutated((c) => (c.documents[1].id = "sample-law")), "DUPLICATE", "documents[1].id");
++  });
++});
++
++describe("یکپارچگی: رابطه‌ها و رأی‌ها", () => {
++  it("ارجاع معلق", () => {
++    expectIssue(mutated((c) => (c.relations[0].to.documentId = "ghost")), "DANGLING_REF", "relations[0].to");
++    expectIssue(mutated((c) => (c.relations[0].from.documentId = "ghost")), "DANGLING_REF", "relations[0].from");
++    expectIssue(mutated((c) => (c.relations[1].to.article = "99")), "DANGLING_REF", "relations[1].to");
++    expectIssue(mutated((c) => (c.rulings[0].cites[0].article = "3")), "DANGLING_REF", "rulings[0].cites[0]");
++    expectIssue(mutated((c) => (c.rulings[0].cites[0].documentId = "ghost")), "DANGLING_REF", "rulings[0].cites[0]");
++  });
++
++  it("ارجاع با رقم فارسی/«مکرر» عربی به شکل متعارف تبدیل و پیدا می‌شود", () => {
++    const c = fresh();
++    c.relations[1].to.article = "ماده ۲ مكرر";
++    expect(loaded(c).relations[1]?.to.article).toBe("2 مکرر");
++  });
++
++  it("رابطه با خودش", () => {
++    expectIssue(
++      mutated((c) => {
++        c.relations[1].to = { ...c.relations[1].from };
++      }),
++      "INVALID_FIELD",
++      "relations[1]",
++    );
++  });
++
++  it("رابطهٔ تکراری؛ همان رابطه با تاریخ دیگر مجاز است", () => {
++    expectIssue(mutated((c) => c.relations.push({ ...c.relations[1] })), "DUPLICATE", "relations[3]");
++    expect(mutated((c) => c.relations.push({ ...c.relations[1], effectiveFrom: "2018-01-01" }))).toEqual([]);
++  });
++
++  it("نسخ/جایگزینیِ دوطرفه متناقض است؛ «refers-to» دوطرفه نه", () => {
++    const rel = (type: string) => ({
++      type,
++      from: { documentId: "sample-single-act", article: null },
++      to: { documentId: "sample-law", article: null },
++      effectiveFrom: null,
++      note: null,
++      provenance: fresh().documents[0].provenance,
++    });
++    expectIssue(mutated((c) => c.relations.push(rel("repeals"))), "CONTRADICTORY_RELATION", "relations[3]");
++    expectIssue(
++      mutated((c) => {
++        c.relations.push({ ...rel("replaces") });
++        c.relations.push({ ...rel("replaces"), from: rel("x").to, to: rel("x").from });
++      }),
++      "CONTRADICTORY_RELATION",
++      "relations[4]",
++    );
++    expect(
++      mutated((c) => {
++        c.relations.push(rel("refers-to"));
++        c.relations.push({ ...rel("refers-to"), from: rel("x").to, to: rel("x").from });
++      }),
++    ).toEqual([]);
++  });
++
++  it("رأی: شناسه و ارجاع تکراری", () => {
++    expectIssue(mutated((c) => c.rulings.push({ ...c.rulings[0] })), "DUPLICATE", "rulings[1].id");
++    expectIssue(mutated((c) => c.rulings[0].cites.push({ ...c.rulings[0].cites[0] })), "DUPLICATE", "rulings[0].cites[1]");
++    expect(mutated((c) => (c.rulings[0].cites = []))).toEqual([]);
++    expect(mutated((c) => delete c.rulings[0].cites)).toEqual([]);
++  });
++});
++
++describe("گزارش مسائل", () => {
++  it("همهٔ مسائل یک‌جا گزارش می‌شوند", () => {
++    const list = mutated((c) => {
++      c.documents[0].kind = "x";
++      c.documents[1].title = "";
++      c.relations[0].type = "zzz";
++    });
++    expect(codes(list)).toEqual(expect.arrayContaining(["INVALID_FIELD@documents[0].kind", "INVALID_FIELD@documents[1].title", "INVALID_FIELD@relations[0].type"]));
++  });
++
++  it("وقتی شکل خراب است، مسئلهٔ ثانویهٔ یکپارچگی نویز نمی‌سازد", () => {
++    const list = mutated((c) => {
++      c.documents[1].id = "sample-law"; // تکراری
++      c.documents[0].kind = "x"; // خرابی شکل
++    });
++    expect(list.map((i) => i.code)).toEqual(["INVALID_FIELD"]);
++  });
++
++  it("پیام‌ها فارسی و مسیرها دقیق‌اند", () => {
++    const list = mutated((c) => (c.documents[0].kind = "x"));
++    expect(list[0]?.message).toMatch(/[\u0600-\u06FF]/);
++    expect(list[0]?.path).toBe("documents[0].kind");
++  });
++
++  it("آرایهٔ تُنُک (خانهٔ خالی) بی‌صدا رد نمی‌شود — رگرسیون باگِ یافته‌شده با تست فازی", () => {
++    const c = fresh();
++    delete c.documents[0].articles[0].versions[1]; // خانهٔ خالی، نه undefined
++    expect(1 in c.documents[0].articles[0].versions).toBe(false);
++    expectIssue(issuesOf(c), "INVALID_FIELD", "documents[0].articles[0].versions[1]");
++    const d = fresh();
++    delete d.documents[1];
++    expectIssue(issuesOf(d), "INVALID_FIELD", "documents[1]");
++    const e = fresh();
++    delete e.relations[0];
++    expectIssue(issuesOf(e), "INVALID_FIELD", "relations[0]");
++  });
++
++  it("سقف مسائل: حداکثر ۱۰۰ + یک مسئلهٔ پایانی", () => {
++    const c = fresh();
++    c.documents = Array.from({ length: 300 }, () => ({ id: "BAD", kind: "x" }));
++    const list = issuesOf(c);
++    expect(list.length).toBe(KB_LIMITS.maxIssues + 1);
++    expect(list[list.length - 1]?.code).toBe("LIMIT_EXCEEDED");
++    expect(list[list.length - 1]?.path).toBe("$");
++  });
++});
++
++describe("سقف‌های فنی", () => {
++  it("آرایهٔ بزرگ‌تر از سقف، بی‌پیمایش رد می‌شود", () => {
++    const c = fresh();
++    c.documents = new Array(KB_LIMITS.documents + 1).fill(0);
++    expect(codes(issuesOf(c))).toEqual(["LIMIT_EXCEEDED@$.documents"]);
++    const d = fresh();
++    d.relations = new Array(KB_LIMITS.relations + 1).fill(0);
++    expect(codes(issuesOf(d))).toEqual(["LIMIT_EXCEEDED@$.relations"]);
++    expectIssue(mutated((x) => (x.documents[0].articles[0].versions = new Array(KB_LIMITS.versionsPerArticle + 1).fill(0))), "LIMIT_EXCEEDED", "documents[0].articles[0].versions");
++    expectIssue(mutated((x) => (x.documents[0].articles[1].versions[0].subparts = new Array(KB_LIMITS.subpartsPerVersion + 1).fill(0))), "LIMIT_EXCEEDED", "documents[0].articles[1].versions[0].subparts");
++    expectIssue(mutated((x) => (x.rulings[0].cites = new Array(KB_LIMITS.citesPerRuling + 1).fill(0))), "LIMIT_EXCEEDED", "rulings[0].cites");
++  });
++});
++
++describe("loadCorpusFromJson", () => {
++  it("JSON درست", () => {
++    expect(loadCorpusFromJson(JSON.stringify(fresh())).ok).toBe(true);
++  });
++  it("نحو نامعتبر، ورودی غیرمتن و حجم بیش از سقف", () => {
++    for (const bad of ["{", "", "undefined", "{'a':1}", '{"documents":[],}']) {
++      const r = loadCorpusFromJson(bad);
++      expect(!r.ok && r.error[0]?.code).toBe("INVALID_FIELD");
++    }
++    const r2 = loadCorpusFromJson(5 as unknown as string);
++    expect(!r2.ok && r2.error[0]?.code).toBe("INVALID_FIELD");
++    const r3 = loadCorpusFromJson("x".repeat(KB_LIMITS.maxJsonChars + 1));
++    expect(!r3.ok && r3.error[0]?.code).toBe("LIMIT_EXCEEDED");
++  });
++  it("JSON معتبر ولی با شکل نادرست", () => {
++    const r = loadCorpusFromJson("[]");
++    expect(!r.ok && r.error[0]?.code).toBe("INVALID_FIELD");
++  });
++});
++
++describe("فاز: ورودی تصادفی هرگز پرتاب نمی‌کند و خروجی موفق همیشه خودتوان است", () => {
++  function lcg(seed: number) {
++    let s = seed >>> 0;
++    return (n: number) => {
++      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
++      return s % n;
++    };
++  }
++  const junk: unknown[] = [null, undefined, 0, -1, 1.5, NaN, "", " ", "x", "2024-01-01", "1403-01-01", true, false, [], {}, [1, 2], { a: 1 }, "\u202E", "a\u0000", "ماده ۱۰", Infinity];
++
++  function allPaths(node: unknown, path: (string | number)[], out: (string | number)[][]) {
++    out.push(path);
++    if (Array.isArray(node)) node.forEach((x, i) => allPaths(x, [...path, i], out));
++    else if (node && typeof node === "object") for (const k of Object.keys(node)) allPaths((node as J)[k], [...path, k], out);
++  }
++
++  it("۳۰۰۰ جهش تصادفی روی نمونه", () => {
++    const rnd = lcg(2025);
++    let okCount = 0;
++    let failCount = 0;
++    for (let i = 0; i < 3000; i++) {
++      const c = fresh();
++      const paths: (string | number)[][] = [];
++      allPaths(c, [], paths);
++      const target = paths[1 + rnd(paths.length - 1)] as (string | number)[];
++      const parent = target.slice(0, -1).reduce<J>((n, k) => n[k as string], c);
++      const key = target[target.length - 1] as string | number;
++      const mode = rnd(3);
++      if (mode === 0) parent[key as string] = junk[rnd(junk.length)];
++      else if (mode === 1) delete parent[key as string];
++      else if (Array.isArray(parent)) parent.splice(key as number, 0, junk[rnd(junk.length)]);
++      else parent["zz" + rnd(3)] = junk[rnd(junk.length)];
++      let r: ReturnType<typeof loadCorpus> | undefined;
++      expect(() => (r = loadCorpus(c))).not.toThrow();
++      if (r?.ok) {
++        okCount++;
++        expect(loadCorpus(JSON.parse(JSON.stringify(r.value)))).toEqual(r);
++      } else {
++        failCount++;
++        expect(r && !r.ok && r.error.length > 0).toBe(true);
++      }
++    }
++    // هر دو شاخه واقعاً دیده شده‌اند (تست پوچ نباشد)
++    expect(okCount).toBeGreaterThan(50);
++    expect(failCount).toBeGreaterThan(500);
++  });
++});
+diff --git a/src/modules/legal-kb-schema/load.ts b/src/modules/legal-kb-schema/load.ts
+new file mode 100644
+index 0000000..9ec67e9
+--- /dev/null
++++ b/src/modules/legal-kb-schema/load.ts
+@@ -0,0 +1,59 @@
++/** `loadCorpus`: تنها دروازهٔ ورود داده به پایگاه دانش. ورودی `unknown` ← `Corpus` معتبر و متعارف، یا فهرست کامل مسائل. */
++import { ok, type Result } from "@/modules/shared-types";
++import { compareIsoDates } from "./dates";
++import { checkIntegrity } from "./integrity";
++import { addIssue, finishIssues, KB_LIMITS, newCtx } from "./issues";
++import { compareArticleLabels, parseArticleLabel } from "./label";
++import { readCorpus } from "./parse";
++import type { Article, Corpus, CorpusIssue } from "./types";
++
++/** ترتیب متعارف: مواد به ترتیب طبیعی برچسب، نسخه‌ها به ترتیب شروع. (ترتیب سندها و رابطه‌ها حفظ می‌شود.) */
++function canonicalize(corpus: Corpus): Corpus {
++  const rank = (a: Article) => {
++    const r = parseArticleLabel(a.label);
++    return r.ok ? r.value : { kind: "single" as const };
++  };
++  return {
++    documents: corpus.documents.map((d) => ({
++      ...d,
++      articles: [...d.articles]
++        .sort((a, b) => compareArticleLabels(rank(a), rank(b)))
++        .map((a) => ({ ...a, versions: [...a.versions].sort((x, y) => compareIsoDates(x.validFrom, y.validFrom)) })),
++    })),
++    relations: corpus.relations,
++    rulings: corpus.rulings,
++  };
++}
++
++export function loadCorpus(input: unknown): Result<Corpus, readonly CorpusIssue[]> {
++  const ctx = newCtx();
++  const corpus = readCorpus(ctx, input);
++  if (corpus && ctx.issues.length === 0) checkIntegrity(corpus, ctx);
++  if (ctx.issues.length > 0 || !corpus) return failure(finishIssues(ctx));
++  return ok(canonicalize(corpus));
++}
++
++export function loadCorpusFromJson(text: string): Result<Corpus, readonly CorpusIssue[]> {
++  const ctx = newCtx();
++  if (typeof text !== "string") {
++    addIssue(ctx, "INVALID_FIELD", "$", "ورودی باید متن JSON باشد.");
++    return failure(finishIssues(ctx));
++  }
++  if (text.length > KB_LIMITS.maxJsonChars) {
++    addIssue(ctx, "LIMIT_EXCEEDED", "$", `حجم JSON بیش از ${KB_LIMITS.maxJsonChars} نویسه است.`);
++    return failure(finishIssues(ctx));
++  }
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(text);
++  } catch {
++    addIssue(ctx, "INVALID_FIELD", "$", "JSON نامعتبر است (خطای نحوی).");
++    return failure(finishIssues(ctx));
++  }
++  return loadCorpus(parsed);
++}
++
++/** `err` مشترک فقط کد دامنه می‌گیرد؛ اینجا خطا فهرست مسائل است. */
++function failure(issues: readonly CorpusIssue[]): Result<never, readonly CorpusIssue[]> {
++  return { ok: false, error: issues };
++}
+diff --git a/src/modules/legal-kb-schema/lookup.test.ts b/src/modules/legal-kb-schema/lookup.test.ts
+new file mode 100644
+index 0000000..6124244
+--- /dev/null
++++ b/src/modules/legal-kb-schema/lookup.test.ts
+@@ -0,0 +1,281 @@
++import { describe, expect, it } from "vitest";
++import { loadCorpus } from "./load";
++import { buildCorpusIndex, findArticle, findDocument, relationsFor, resolveCitation, rulingsCiting, versionsInForceAt, type CorpusIndex } from "./lookup";
++import { FICTIONAL_SAMPLE_CORPUS } from "./sample-corpus";
++import type { CitationRef, VersionLookup } from "./types";
++
++type J = Record<string, any>;
++
++function indexOf(input: unknown): CorpusIndex {
++  const r = loadCorpus(input);
++  if (!r.ok) throw new Error(JSON.stringify(r.error));
++  return buildCorpusIndex(r.value);
++}
++const sample = () => indexOf(JSON.parse(JSON.stringify(FICTIONAL_SAMPLE_CORPUS)));
++
++const cite = (documentId: string, article: string, subpart: CitationRef["subpart"] = null): CitationRef => ({ documentId, article, subpart });
++function lookup(index: CorpusIndex, ref: CitationRef, date: string): VersionLookup {
++  const r = resolveCitation(index, ref, date);
++  if (!r.ok) throw new Error(`${r.error.code}: ${r.error.message}`);
++  return r.value;
++}
++/** خلاصهٔ خوانا: found ← متن نسخه */
++function brief(l: VersionLookup): string {
++  switch (l.status) {
++    case "found":
++      return `found:${l.version.validFrom}`;
++    case "gap":
++      return `gap:${l.previousValidTo}..${l.nextValidFrom}`;
++    case "not-yet-in-force":
++      return `not-yet:${l.firstValidFrom}`;
++    case "no-longer-in-force":
++      return `no-longer:${l.lastValidTo}`;
++    default:
++      return l.status;
++  }
++}
++
++describe("نسخه‌بندی زمانی: مرزهای بازهٔ نیم‌باز [validFrom, validTo)", () => {
++  const index = sample();
++  // ماده ۱: [2001-01-01,2010-06-01) [2010-06-01,2015-01-01) شکاف [2018-01-01,∞)
++  const at = (d: string) => brief(lookup(index, cite("sample-law", "1"), d));
++
++  it("پیش از نخستین نسخه", () => {
++    expect(at("2000-12-31")).toBe("not-yet:2001-01-01");
++    expect(at("1800-01-01")).toBe("not-yet:2001-01-01");
++  });
++  it("روز شروع شامل است", () => {
++    expect(at("2001-01-01")).toBe("found:2001-01-01");
++    expect(at("2018-01-01")).toBe("found:2018-01-01");
++  });
++  it("آخرین روز پیش از validTo هنوز معتبر؛ خودِ validTo نسخهٔ بعدی", () => {
++    expect(at("2010-05-31")).toBe("found:2001-01-01");
++    expect(at("2010-06-01")).toBe("found:2010-06-01");
++    expect(at("2014-12-31")).toBe("found:2010-06-01");
++  });
++  it("شکاف: از روز validTo تا یک روز پیش از شروع نسخهٔ بعد", () => {
++    expect(at("2015-01-01")).toBe("gap:2015-01-01..2018-01-01");
++    expect(at("2016-07-15")).toBe("gap:2015-01-01..2018-01-01");
++    expect(at("2017-12-31")).toBe("gap:2015-01-01..2018-01-01");
++  });
++  it("نسخهٔ بی‌پایان تا آخر معتبر است", () => {
++    expect(at("2099-12-31")).toBe("found:2018-01-01");
++    expect(at("2200-12-31")).toBe("found:2018-01-01");
++  });
++  it("مادهٔ نسخ‌شده: پس از validTo آخر «دیگر معتبر نیست»", () => {
++    const at2 = (d: string) => brief(lookup(index, cite("sample-single-act", "واحده"), d));
++    expect(at2("2019-12-31")).toBe("found:2005-01-01");
++    expect(at2("2020-01-01")).toBe("no-longer:2020-01-01");
++    expect(at2("2100-01-01")).toBe("no-longer:2020-01-01");
++    expect(at2("2004-12-31")).toBe("not-yet:2005-01-01");
++  });
++  it("ماده‌ای که در سال‌های بعد افزوده شد", () => {
++    const at3 = (d: string) => brief(lookup(index, cite("sample-law", "2 مکرر"), d));
++    expect(at3("2012-04-30")).toBe("not-yet:2012-05-01");
++    expect(at3("2012-05-01")).toBe("found:2012-05-01");
++  });
++});
++
++describe("resolveCitation: نتیجه‌های صریح", () => {
++  const index = sample();
++  it("سند یا ماده ناموجود", () => {
++    expect(lookup(index, cite("ghost", "1"), "2020-01-01").status).toBe("unknown-document");
++    expect(lookup(index, cite("sample-law", "99"), "2020-01-01").status).toBe("unknown-article");
++    expect(lookup(index, cite("sample-law", "2 مکرر 2"), "2020-01-01").status).toBe("unknown-article");
++    // «۲ مکرر» ≠ «۲»
++    expect(lookup(index, cite("sample-regulation", "2"), "2020-01-01").status).toBe("unknown-article");
++  });
++
++  it("ارقام فارسی/پیشوند «ماده» همان ماده را می‌یابند", () => {
++    const a = lookup(index, cite("sample-law", "۲"), "2020-01-01");
++    const b = lookup(index, cite("sample-law", "ماده 2"), "2020-01-01");
++    expect(a).toEqual(b);
++    expect(lookup(index, cite("sample-law", "ماده ۲ مكرر"), "2020-01-01").status).toBe("found");
++    expect(lookup(index, cite("sample-single-act", "ماده واحده"), "2010-01-01").status).toBe("found");
++  });
++
++  it("تبصره/بند: یافتن، نیافتن و وابستگی به نسخه (تاریخ)", () => {
++    const n = lookup(index, cite("sample-law", "2", { kind: "note", label: "۱" }), "2020-01-01");
++    expect(n.status === "found" && n.subpart?.text).toBe("تبصرهٔ ۱ ساختگی.");
++    const c = lookup(index, cite("sample-law", "2", { kind: "clause", label: "الف" }), "2020-01-01");
++    expect(c.status === "found" && c.subpart?.label).toBe("الف");
++    expect(lookup(index, cite("sample-law", "2", { kind: "clause", label: "پ" }), "2020-01-01").status).toBe("unknown-subpart");
++    expect(lookup(index, cite("sample-law", "2", { kind: "note", label: "الف" }), "2020-01-01").status).toBe("unknown-subpart"); // نوع متفاوت
++    // ماده ۱: تبصرهٔ ۱ فقط در نسخهٔ دوم هست
++    expect(lookup(index, cite("sample-law", "1", { kind: "note", label: "1" }), "2005-01-01").status).toBe("unknown-subpart");
++    expect(lookup(index, cite("sample-law", "1", { kind: "note", label: "1" }), "2012-01-01").status).toBe("found");
++    expect(lookup(index, cite("sample-law", "1", { kind: "note", label: "1" }), "2020-01-01").status).toBe("unknown-subpart");
++    // وقتی ماده در آن تاریخ معتبر نیست، وضعیت زمانی گزارش می‌شود نه subpart
++    expect(lookup(index, cite("sample-law", "1", { kind: "note", label: "1" }), "2016-01-01").status).toBe("gap");
++  });
++
++  it("verified: فقط وقتی نسخه (نه سند) «legally-verified» است", () => {
++    const f = (ref: CitationRef, d: string) => {
++      const l = lookup(index, ref, d);
++      return l.status === "found" ? l.verified : null;
++    };
++    expect(f(cite("sample-law", "1"), "2005-01-01")).toBe(true); // نسخهٔ نخست تأییدشده
++    expect(f(cite("sample-law", "1"), "2012-01-01")).toBe(false); // نسخهٔ دوم نه
++    expect(f(cite("sample-law", "2"), "2020-01-01")).toBe(true);
++    expect(f(cite("sample-regulation", "1"), "2020-01-01")).toBe(false);
++  });
++
++  it("found شامل کل نسخه و برچسب متعارف است", () => {
++    const l = lookup(index, cite("sample-law", "ماده ۲ مكرر"), "2020-01-01");
++    expect(l.status === "found" && l.article).toBe("2 مکرر");
++    expect(l.status === "found" && l.documentId).toBe("sample-law");
++    expect(l.status === "found" && l.version.text).toBe("متن ساختگی ماده ۲ مکرر.");
++    expect(l.status === "found" && l.subpart).toBeNull();
++  });
++
++  it("ورودی بد = خطای Result، نه نتیجهٔ جعلی", () => {
++    const err = (ref: CitationRef, d: string) => {
++      const r = resolveCitation(index, ref, d);
++      return r.ok ? "OK" : r.error.code;
++    };
++    expect(err(cite("sample-law", "1"), "2020-13-01")).toBe("INVALID_DATE");
++    expect(err(cite("sample-law", "1"), "1403-01-01")).toBe("INVALID_DATE");
++    expect(err(cite("sample-law", "1"), "")).toBe("INVALID_DATE");
++    expect(err(cite("sample-law", "1"), 5 as unknown as string)).toBe("INVALID_DATE");
++    expect(err(cite("sample-law", "abc"), "2020-01-01")).toBe("INVALID_INPUT");
++    expect(err(cite("sample-law", "0"), "2020-01-01")).toBe("OUT_OF_RANGE");
++    expect(err(cite("sample-law", "1", { kind: "note", label: "zz" }), "2020-01-01")).toBe("INVALID_INPUT");
++    expect(err(cite("sample-law", "1", { kind: "para" as "note", label: "1" }), "2020-01-01")).toBe("INVALID_INPUT");
++    // شناسهٔ سند نامعتبر خطا نیست؛ «سند ناموجود» است
++    expect(lookup(index, cite("BAD ID", "1"), "2020-01-01").status).toBe("unknown-document");
++  });
++
++  it("«hasOwnProperty»/«__proto__» به‌عنوان شناسهٔ سند چیزی نمی‌یابد", () => {
++    for (const id of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {
++      expect(lookup(index, cite(id, "1"), "2020-01-01").status).toBe("unknown-document");
++    }
++  });
++});
++
++describe("جست‌وجوهای کمکی", () => {
++  const index = sample();
++
++  it("findDocument / findArticle", () => {
++    expect(findDocument(index, "sample-law")?.title).toContain("نمونه");
++    expect(findDocument(index, "ghost")).toBeUndefined();
++    expect(findArticle(index, "sample-law", "۲ مکرر")?.label).toBe("2 مکرر");
++    expect(findArticle(index, "sample-law", "99")).toBeUndefined();
++    expect(findArticle(index, "sample-law", "نامعتبر!")).toBeUndefined();
++  });
++
++  it("versionsInForceAt: فیلتر تاریخ اعتبار", () => {
++    const list = (d: string) => {
++      const r = versionsInForceAt(index, d);
++      if (!r.ok) throw new Error("x");
++      return r.value.map((e) => `${e.documentId}/${e.article}@${e.version.validFrom}`);
++    };
++    expect(list("2000-01-01")).toEqual([]);
++    expect(list("2002-01-01")).toEqual(["sample-law/1@2001-01-01", "sample-law/2@2001-01-01"]);
++    expect(list("2011-01-01")).toEqual(["sample-law/1@2010-06-01", "sample-law/2@2001-01-01", "sample-single-act/واحده@2005-01-01", "sample-regulation/1@2003-01-01"]);
++    // ماده ۱ در شکاف است و نیست؛ «واحده» هنوز تا ۲۰۲۰ معتبر است
++    expect(list("2016-01-01")).toEqual(["sample-law/2@2001-01-01", "sample-law/2 مکرر@2012-05-01", "sample-single-act/واحده@2005-01-01", "sample-regulation/1@2003-01-01"]);
++    // از ۲۰۲۰-۰۱-۰۱ «واحده» (validTo) دیگر معتبر نیست
++    expect(list("2020-01-01")).toEqual(["sample-law/1@2018-01-01", "sample-law/2@2001-01-01", "sample-law/2 مکرر@2012-05-01", "sample-regulation/1@2003-01-01"]);
++    const bad = versionsInForceAt(index, "2020-02-30");
++    expect(!bad.ok && bad.error.code).toBe("INVALID_DATE");
++  });
++
++  it("relationsFor: ماده شامل رابطه‌های سطح سند هم می‌شود (قابل خاموش‌کردن)", () => {
++    const types = (rs: readonly { type: string }[]) => rs.map((r) => r.type);
++    // ماده ۲ قانون نمونه: اصلاحیه (مبدأ) + رابطه‌های سطح سند (اجرا: مقصد، نسخ: مبدأ)
++    expect(types(relationsFor(index, { documentId: "sample-law", article: "2" }))).toEqual(["implements", "repeals", "amends"]);
++    expect(types(relationsFor(index, { documentId: "sample-law", article: "2" }, { includeDocumentLevel: false }))).toEqual(["amends"]);
++    // ماده ۱ (مقصد اصلاح)
++    expect(types(relationsFor(index, { documentId: "sample-law", article: "1" }, { includeDocumentLevel: false }))).toEqual(["amends"]);
++    // خود سند: دقیقاً رابطه‌های سطح سند
++    expect(types(relationsFor(index, { documentId: "sample-law", article: null }))).toEqual(["implements", "repeals"]);
++    expect(types(relationsFor(index, { documentId: "sample-single-act", article: null }))).toEqual(["repeals"]);
++    expect(relationsFor(index, { documentId: "ghost", article: null })).toEqual([]);
++  });
++
++  it("rulingsCiting فقط همان گره را می‌دهد", () => {
++    expect(rulingsCiting(index, { documentId: "sample-law", article: "2" }).map((g) => g.id)).toEqual(["sample-unity-ruling-1"]);
++    expect(rulingsCiting(index, { documentId: "sample-law", article: "۲" }).length).toBe(1);
++    expect(rulingsCiting(index, { documentId: "sample-law", article: "1" })).toEqual([]);
++    expect(rulingsCiting(index, { documentId: "sample-law", article: null })).toEqual([]);
++  });
++
++  it("رابطه‌ای که هم سطح سند و هم سطح ماده را لمس می‌کند، یک بار می‌آید", () => {
++    const c = JSON.parse(JSON.stringify(FICTIONAL_SAMPLE_CORPUS)) as J;
++    c.relations = [{ ...c.relations[0], type: "refers-to", from: { documentId: "sample-law", article: null }, to: { documentId: "sample-law", article: "1" } }];
++    const idx = indexOf(c);
++    expect(relationsFor(idx, { documentId: "sample-law", article: "1" }).length).toBe(1);
++  });
++});
++
++// ───────────── oracle مستقل: حساب روی «شمارهٔ روز» صحیح، نه رشته ─────────────
++
++describe("مقایسهٔ انبوه با oracle (نمایش عددی روز؛ منطق جدا از موتور)", () => {
++  function lcg(seed: number) {
++    let s = seed >>> 0;
++    return (n: number) => {
++      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
++      return s % n;
++    };
++  }
++  const DAY = 86_400_000;
++  const BASE = Date.UTC(2000, 0, 1) / DAY;
++  const iso = (day: number) => new Date((BASE + day) * DAY).toISOString().slice(0, 10);
++
++  type Seg = { s: number; e: number | null };
++  /** oracle: فقط مقایسهٔ عددی */
++  function oracle(segs: Seg[], t: number): string {
++    for (const g of segs) if (t >= g.s && (g.e === null || t < g.e)) return `found:${iso(g.s)}`;
++    if (t < segs[0]!.s) return `not-yet:${iso(segs[0]!.s)}`;
++    const last = segs[segs.length - 1]!;
++    if (last.e !== null && t >= last.e) return `no-longer:${iso(last.e)}`;
++    const prev = [...segs].reverse().find((g) => g.e !== null && g.e <= t)!;
++    const next = segs.find((g) => g.s > t)!;
++    return `gap:${iso(prev.e as number)}..${iso(next.s)}`;
++  }
++
++  it("۳۰۰ زنجیرهٔ تصادفی × همهٔ روزهای مرزی و تصادفی", () => {
++    const rnd = lcg(99);
++    let checks = 0;
++    let kinds = new Set<string>();
++    for (let n = 0; n < 300; n++) {
++      const count = 1 + rnd(5);
++      const segs: Seg[] = [];
++      let cursor = rnd(300);
++      for (let i = 0; i < count; i++) {
++        const s = cursor;
++        const last = i === count - 1;
++        const open = last && rnd(2) === 0;
++        const e = open ? null : s + 1 + rnd(400);
++        segs.push({ s, e });
++        cursor = (e ?? s) + (rnd(3) === 0 ? 1 + rnd(200) : 0); // گاهی شکاف، گاهی چسبیده
++      }
++      const sampleJson = JSON.parse(JSON.stringify(FICTIONAL_SAMPLE_CORPUS)) as J;
++      const prov = sampleJson.documents[0].articles[0].versions[0].provenance;
++      sampleJson.documents = [
++        {
++          ...sampleJson.documents[0],
++          articles: [{ label: "7", versions: segs.map((g, i) => ({ validFrom: iso(g.s), validTo: g.e === null ? null : iso(g.e), text: `نسخه ${i}`, subparts: [], provenance: prov })) }],
++        },
++      ];
++      sampleJson.relations = [];
++      sampleJson.rulings = [];
++      const index = indexOf(sampleJson);
++      const days = new Set<number>();
++      for (const g of segs) for (const d of [g.s - 1, g.s, g.s + 1, (g.e ?? g.s) - 1, g.e ?? g.s, (g.e ?? g.s) + 1]) days.add(d);
++      for (let k = 0; k < 10; k++) days.add(rnd(1400) - 50);
++      const maxEnd = Math.max(...segs.map((g) => g.e ?? g.s));
++      days.add(maxEnd + 5000);
++      for (const t of days) {
++        const got = brief(lookup(index, cite("sample-law", "7"), iso(t)));
++        const want = oracle(segs, t);
++        expect(got, `زنجیره ${n} روز ${iso(t)} ${JSON.stringify(segs)}`).toBe(want);
++        kinds.add(want.split(":")[0]!);
++        checks++;
++      }
++    }
++    expect(checks).toBeGreaterThan(5000);
++    // همهٔ چهار وضعیت زمانی واقعاً دیده شده‌اند
++    expect([...kinds].sort()).toEqual(["found", "gap", "no-longer", "not-yet"]);
++  });
++});
+diff --git a/src/modules/legal-kb-schema/lookup.ts b/src/modules/legal-kb-schema/lookup.ts
+new file mode 100644
+index 0000000..c832fbf
+--- /dev/null
++++ b/src/modules/legal-kb-schema/lookup.ts
+@@ -0,0 +1,148 @@
++/**
++ * شاخص خواندنی روی Corpus معتبر + جست‌وجوی نسخهٔ معتبر در یک تاریخ (نسخه‌بندی زمانی).
++ * همه‌چیز خالص و قطعی است؛ «امروز» از بیرون می‌آید.
++ */
++import { err, ok, type Result } from "@/modules/shared-types";
++import { compareIsoDates, parseIsoDate } from "./dates";
++import { canonicalArticleLabel, articleKey, canonicalSubpartLabel, parseArticleLabel } from "./label";
++import type { Article, ArticleVersion, CitationRef, Corpus, IsoDate, LawDocument, NodeRef, Relation, Ruling, VersionLookup } from "./types";
++
++type ArticleEntry = Readonly<{ document: LawDocument; article: Article }>;
++
++export type CorpusIndex = Readonly<{
++  corpus: Corpus;
++  documents: ReadonlyMap<string, LawDocument>;
++  articles: ReadonlyMap<string, ArticleEntry>;
++  relationsByNode: ReadonlyMap<string, readonly Relation[]>;
++  rulingsByNode: ReadonlyMap<string, readonly Ruling[]>;
++}>;
++
++const nodeKey = (documentId: string, article: string | null): string => {
++  if (article === null) return documentId;
++  const l = parseArticleLabel(article);
++  return `${documentId}/${l.ok ? articleKey(l.value) : article}`;
++};
++
++function push<V>(map: Map<string, V[]>, key: string, value: V): void {
++  const list = map.get(key);
++  if (list) list.push(value);
++  else map.set(key, [value]);
++}
++
++/** فقط روی خروجی `loadCorpus` تضمین درستی دارد. */
++export function buildCorpusIndex(corpus: Corpus): CorpusIndex {
++  const documents = new Map<string, LawDocument>();
++  const articles = new Map<string, ArticleEntry>();
++  const relationsByNode = new Map<string, Relation[]>();
++  const rulingsByNode = new Map<string, Ruling[]>();
++  for (const document of corpus.documents) {
++    documents.set(document.id, document);
++    for (const article of document.articles) articles.set(nodeKey(document.id, article.label), { document, article });
++  }
++  for (const r of corpus.relations) {
++    const a = nodeKey(r.from.documentId, r.from.article);
++    const b = nodeKey(r.to.documentId, r.to.article);
++    push(relationsByNode, a, r);
++    push(relationsByNode, b, r); // a≠b همیشه (رابطه با خودش در loadCorpus رد می‌شود)
++  }
++  for (const g of corpus.rulings) for (const c of g.cites) push(rulingsByNode, nodeKey(c.documentId, c.article), g);
++  return { corpus, documents, articles, relationsByNode, rulingsByNode };
++}
++
++export function findDocument(index: CorpusIndex, documentId: string): LawDocument | undefined {
++  return index.documents.get(documentId);
++}
++
++export function findArticle(index: CorpusIndex, documentId: string, articleLabel: string): Article | undefined {
++  const c = canonicalArticleLabel(articleLabel);
++  return c.ok ? index.articles.get(nodeKey(documentId, c.value))?.article : undefined;
++}
++
++/** نسخهٔ معتبر در تاریخ (بازهٔ نیم‌باز)؛ آرایهٔ نسخه‌ها مرتب است (خروجی loadCorpus). */
++function versionAt(versions: readonly ArticleVersion[], date: IsoDate): VersionLookup | ArticleVersion {
++  let previous: ArticleVersion | null = null;
++  for (const v of versions) {
++    if (compareIsoDates(date, v.validFrom) < 0) {
++      if (previous === null) return { status: "not-yet-in-force", firstValidFrom: v.validFrom };
++      // previous.validTo ≤ date < v.validFrom ⇒ شکاف (اگر previous بی‌پایان بود، درونش می‌افتاد)
++      return { status: "gap", previousValidTo: previous.validTo as IsoDate, nextValidFrom: v.validFrom };
++    }
++    if (v.validTo === null || compareIsoDates(date, v.validTo) < 0) return v;
++    previous = v;
++  }
++  return { status: "no-longer-in-force", lastValidTo: (previous as ArticleVersion).validTo as IsoDate };
++}
++
++function isVersion(x: VersionLookup | ArticleVersion): x is ArticleVersion {
++  return "validFrom" in x;
++}
++
++/**
++ * ارجاع را در تاریخ مشخص حل می‌کند. خطای `Result` فقط برای ورودی بد (تاریخ، ارجاع)؛
++ * «سند/ماده/بخش نیست» و «در آن تاریخ معتبر نیست» نتیجهٔ عادی (`status`) هستند تا راستی‌آزمایی روی همه switch کند.
++ * ⚠️ `found.verified=false` یعنی نسخه هنوز توسط حقوقدان تأیید نشده و نباید به‌عنوان استنادِ قطعی به کاربر برسد.
++ */
++export function resolveCitation(index: CorpusIndex, ref: CitationRef, onDate: IsoDate): Result<VersionLookup> {
++  const d = parseIsoDate(onDate);
++  if (!d.ok) return d;
++  const label = canonicalArticleLabel(ref.article);
++  if (!label.ok) return label;
++  if (ref.subpart !== null && ref.subpart.kind !== "note" && ref.subpart.kind !== "clause") return err("INVALID_INPUT", "نوع تبصره/بند نامعتبر است.");
++  const sub = ref.subpart === null ? null : canonicalSubpartLabel(ref.subpart.label);
++  if (sub && !sub.ok) return sub;
++
++  const document = index.documents.get(ref.documentId);
++  if (!document) return ok({ status: "unknown-document" });
++  const entry = index.articles.get(nodeKey(ref.documentId, label.value));
++  if (!entry) return ok({ status: "unknown-article" });
++
++  const found = versionAt(entry.article.versions, d.value);
++  if (!isVersion(found)) return ok(found);
++
++  let subpart = null;
++  if (ref.subpart !== null && sub && sub.ok) {
++    subpart = found.subparts.find((s) => s.kind === ref.subpart?.kind && s.label === sub.value) ?? null;
++    if (!subpart) return ok({ status: "unknown-subpart", version: found });
++  }
++  return ok({
++    status: "found",
++    documentId: ref.documentId,
++    article: label.value,
++    version: found,
++    subpart,
++    verified: found.provenance.review.status === "legally-verified",
++  });
++}
++
++export type InForceEntry = Readonly<{ documentId: string; article: string; version: ArticleVersion; verified: boolean }>;
++
++/** همهٔ مواد معتبر در یک تاریخ (برای فیلتر تاریخ در بازیابی). ترتیب: ترتیب سندها و مواد. */
++export function versionsInForceAt(index: CorpusIndex, onDate: IsoDate): Result<readonly InForceEntry[]> {
++  const d = parseIsoDate(onDate);
++  if (!d.ok) return d;
++  const out: InForceEntry[] = [];
++  for (const doc of index.corpus.documents) {
++    for (const article of doc.articles) {
++      const v = versionAt(article.versions, d.value);
++      if (isVersion(v)) out.push({ documentId: doc.id, article: article.label, version: v, verified: v.provenance.review.status === "legally-verified" });
++    }
++  }
++  return ok(out);
++}
++
++/**
++ * رابطه‌های یک گره. برای گرهٔ «ماده»، رابطه‌های سطح کل سند هم به‌طور پیش‌فرض می‌آیند
++ * (مثلاً «قانون الف، قانون ب را نسخ کرد» همهٔ مواد ب را درگیر می‌کند).
++ */
++export function relationsFor(index: CorpusIndex, ref: NodeRef, options: Readonly<{ includeDocumentLevel?: boolean }> = {}): readonly Relation[] {
++  const exact = index.relationsByNode.get(nodeKey(ref.documentId, ref.article)) ?? [];
++  if (ref.article === null || options.includeDocumentLevel === false) return exact;
++  const docLevel = index.relationsByNode.get(ref.documentId) ?? [];
++  // یک رابطه ممکن است هم در سطح سند و هم در سطح ماده بنشیند (مثلاً مبدأ سند، مقصد ماده)؛ فقط یک بار برگردد.
++  return Array.from(new Set([...docLevel, ...exact]));
++}
++
++/** رأی‌هایی که به این گره ارجاع دارند (دقیقاً همین گره؛ ارجاع به کل سند جدا شمرده می‌شود). */
++export function rulingsCiting(index: CorpusIndex, ref: NodeRef): readonly Ruling[] {
++  return index.rulingsByNode.get(nodeKey(ref.documentId, ref.article)) ?? [];
++}
+diff --git a/src/modules/legal-kb-schema/parse.ts b/src/modules/legal-kb-schema/parse.ts
+new file mode 100644
+index 0000000..6431baf
+--- /dev/null
++++ b/src/modules/legal-kb-schema/parse.ts
+@@ -0,0 +1,192 @@
++/**
++ * ورودی `unknown` (JSON) → `Corpus` تایپ‌دار و متعارف (داخلی؛ رابط عمومی: `loadCorpus` در load.ts).
++ * سخت‌گیرانه: کلید ناشناخته، نوع نادرست، تاریخ ناممکن، متن خالی و نویسهٔ خطرناک همه مسئله‌اند.
++ */
++import { canonicalSubpartLabel, isValidRecordId } from "./label";
++import { addIssue, KB_LIMITS, type Ctx } from "./issues";
++import {
++  articleLabelValue,
++  explicitNullableDate,
++  optDate,
++  optText,
++  optUrl,
++  readArray,
++  record,
++  reqDate,
++  reqEnum,
++  reqText,
++  type Rec,
++} from "./reader";
++import {
++  DOCUMENT_KINDS,
++  RELATION_TYPES,
++  RULING_KINDS,
++  SUBPART_KINDS,
++  type Article,
++  type ArticleVersion,
++  type Corpus,
++  type LawDocument,
++  type NodeRef,
++  type Provenance,
++  type Relation,
++  type Review,
++  type Ruling,
++  type Subpart,
++} from "./types";
++
++const PENDING: Review = { status: "pending-legal-review", reviewedBy: null, reviewedOn: null };
++
++/** مقدار جایگزین فقط برای ادامهٔ بررسی پس از خطا؛ هرگز به خروجی نمی‌رسد. */
++const NO_PROVENANCE: Provenance = { sourceName: "", sourceUrl: null, sourceKind: "secondary", retrievedOn: null, review: PENDING };
++
++function readReview(ctx: Ctx, v: unknown, path: string): Review {
++  if (v === undefined) return PENDING; // پیش‌فرض امن: تأییدنشده
++  const rec = record(ctx, v, path, ["status", "reviewedBy", "reviewedOn"]);
++  if (!rec) return PENDING;
++  const status = reqEnum(ctx, rec, "status", path, ["pending-legal-review", "legally-verified"] as const, "pending-legal-review");
++  const reviewedBy = optText(ctx, rec, "reviewedBy", path, { max: 200 });
++  const reviewedOn = optDate(ctx, rec, "reviewedOn", path);
++  if (status === "legally-verified" && (reviewedBy === null || reviewedOn === null)) {
++    addIssue(ctx, "REVIEW_INCONSISTENT", path, "وضعیت «legally-verified» نام بازبین (reviewedBy) و تاریخ بازبینی (reviewedOn) را لازم دارد.");
++  }
++  if (status === "pending-legal-review" && (reviewedBy !== null || reviewedOn !== null)) {
++    addIssue(ctx, "REVIEW_INCONSISTENT", path, "وضعیت «pending-legal-review» نباید نام یا تاریخ بازبین داشته باشد.");
++  }
++  return { status, reviewedBy, reviewedOn };
++}
++
++function readProvenance(ctx: Ctx, v: unknown, path: string): Provenance {
++  if (v === undefined) {
++    addIssue(ctx, "MISSING_FIELD", path, "منبع (provenance) الزامی است.");
++    return NO_PROVENANCE;
++  }
++  const rec = record(ctx, v, path, ["sourceName", "sourceUrl", "sourceKind", "retrievedOn", "review"]);
++  if (!rec) return NO_PROVENANCE;
++  return {
++    sourceName: reqText(ctx, rec, "sourceName", path, { max: 300 }),
++    sourceUrl: optUrl(ctx, rec, "sourceUrl", path),
++    sourceKind: reqEnum(ctx, rec, "sourceKind", path, ["official", "secondary"] as const, "secondary"),
++    retrievedOn: optDate(ctx, rec, "retrievedOn", path),
++    review: readReview(ctx, rec["review"], `${path}.review`),
++  };
++}
++
++function readSubpart(ctx: Ctx, v: unknown, path: string): Subpart {
++  const fallback: Subpart = { kind: "note", label: "1", text: "" };
++  const rec = record(ctx, v, path, ["kind", "label", "text"]);
++  if (!rec) return fallback;
++  const kind = reqEnum(ctx, rec, "kind", path, SUBPART_KINDS, "note");
++  let label = "";
++  if (rec["label"] === undefined) addIssue(ctx, "MISSING_FIELD", `${path}.label`, "این کلید الزامی است.");
++  else if (typeof rec["label"] !== "string") addIssue(ctx, "INVALID_FIELD", `${path}.label`, "برچسب باید متن باشد.");
++  else {
++    const r = canonicalSubpartLabel(rec["label"]);
++    if (r.ok) label = r.value;
++    else addIssue(ctx, "INVALID_FIELD", `${path}.label`, r.error.message);
++  }
++  return { kind, label, text: reqText(ctx, rec, "text", path, { multiline: true }) };
++}
++
++function readVersion(ctx: Ctx, v: unknown, path: string): ArticleVersion {
++  const empty: ArticleVersion = { validFrom: "1900-01-01", validTo: null, text: "", subparts: [], provenance: NO_PROVENANCE };
++  const rec = record(ctx, v, path, ["validFrom", "validTo", "text", "subparts", "provenance"]);
++  if (!rec) return empty;
++  const subparts = readArray(ctx, rec, "subparts", path, KB_LIMITS.subpartsPerVersion, false).map((s, i) => readSubpart(ctx, s, `${path}.subparts[${i}]`));
++  return {
++    validFrom: reqDate(ctx, rec, "validFrom", path),
++    validTo: explicitNullableDate(ctx, rec, "validTo", path),
++    text: reqText(ctx, rec, "text", path, { multiline: true }),
++    subparts,
++    provenance: readProvenance(ctx, rec["provenance"], `${path}.provenance`),
++  };
++}
++
++function readArticle(ctx: Ctx, v: unknown, path: string): Article {
++  const rec = record(ctx, v, path, ["label", "versions"]);
++  if (!rec) return { label: "", versions: [] };
++  const label = rec["label"] === undefined ? (addIssue(ctx, "MISSING_FIELD", `${path}.label`, "این کلید الزامی است."), "") : articleLabelValue(ctx, rec["label"], `${path}.label`);
++  const raw = readArray(ctx, rec, "versions", path, KB_LIMITS.versionsPerArticle, true);
++  if (Array.isArray(rec["versions"]) && rec["versions"].length === 0) {
++    addIssue(ctx, "MISSING_FIELD", `${path}.versions`, "هر ماده حداقل یک نسخه لازم دارد.");
++  }
++  return { label, versions: raw.map((x, i) => readVersion(ctx, x, `${path}.versions[${i}]`)) };
++}
++
++function readDocument(ctx: Ctx, v: unknown, path: string): LawDocument {
++  const rec = record(ctx, v, path, ["id", "kind", "title", "shortTitle", "enactedOn", "provenance", "articles"]);
++  const empty = (): LawDocument => ({ id: "", kind: "statute", title: "", shortTitle: null, enactedOn: null, provenance: NO_PROVENANCE, articles: [] });
++  if (!rec) return empty();
++  const id = readRecordId(ctx, rec, "id", path);
++  const articles = readArray(ctx, rec, "articles", path, KB_LIMITS.articlesPerDocument, true).map((a, i) => readArticle(ctx, a, `${path}.articles[${i}]`));
++  return {
++    id,
++    kind: reqEnum(ctx, rec, "kind", path, DOCUMENT_KINDS, "statute"),
++    title: reqText(ctx, rec, "title", path, { max: 300 }),
++    shortTitle: optText(ctx, rec, "shortTitle", path, { max: 100 }),
++    enactedOn: optDate(ctx, rec, "enactedOn", path),
++    provenance: readProvenance(ctx, rec["provenance"], `${path}.provenance`),
++    articles,
++  };
++}
++
++function readRecordId(ctx: Ctx, rec: Rec, key: string, path: string): string {
++  const p = `${path}.${key}`;
++  const v = rec[key];
++  if (v === undefined) {
++    addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است.");
++    return "";
++  }
++  if (!isValidRecordId(v)) {
++    addIssue(ctx, "INVALID_FIELD", p, "شناسه باید لاتین کوچک (حرف، عدد و خط تیره، مثل sample-law) و حداکثر ۶۴ نویسه باشد.");
++    return "";
++  }
++  return v;
++}
++
++function readNodeRef(ctx: Ctx, v: unknown, path: string): NodeRef {
++  const rec = record(ctx, v, path, ["documentId", "article"]);
++  if (!rec) return { documentId: "", article: null };
++  const documentId = readRecordId(ctx, rec, "documentId", path);
++  const a = rec["article"];
++  const article = a === undefined || a === null ? null : articleLabelValue(ctx, a, `${path}.article`);
++  return { documentId, article };
++}
++
++function readRelation(ctx: Ctx, v: unknown, path: string): Relation {
++  const rec = record(ctx, v, path, ["type", "from", "to", "effectiveFrom", "note", "provenance"]);
++  if (!rec) return { type: "refers-to", from: { documentId: "", article: null }, to: { documentId: "", article: null }, effectiveFrom: null, note: null, provenance: NO_PROVENANCE };
++  return {
++    type: reqEnum(ctx, rec, "type", path, RELATION_TYPES, "refers-to"),
++    from: rec["from"] === undefined ? (addIssue(ctx, "MISSING_FIELD", `${path}.from`, "این کلید الزامی است."), { documentId: "", article: null }) : readNodeRef(ctx, rec["from"], `${path}.from`),
++    to: rec["to"] === undefined ? (addIssue(ctx, "MISSING_FIELD", `${path}.to`, "این کلید الزامی است."), { documentId: "", article: null }) : readNodeRef(ctx, rec["to"], `${path}.to`),
++    effectiveFrom: explicitNullableDate(ctx, rec, "effectiveFrom", path),
++    note: optText(ctx, rec, "note", path, { multiline: true, max: 2000 }),
++    provenance: readProvenance(ctx, rec["provenance"], `${path}.provenance`),
++  };
++}
++
++function readRuling(ctx: Ctx, v: unknown, path: string): Ruling {
++  const rec = record(ctx, v, path, ["id", "kind", "number", "issuer", "issuedOn", "title", "text", "cites", "provenance"]);
++  if (!rec) return { id: "", kind: "judgment", number: "", issuer: "", issuedOn: "1900-01-01", title: null, text: "", cites: [], provenance: NO_PROVENANCE };
++  return {
++    id: readRecordId(ctx, rec, "id", path),
++    kind: reqEnum(ctx, rec, "kind", path, RULING_KINDS, "judgment"),
++    number: reqText(ctx, rec, "number", path, { max: 100 }),
++    issuer: reqText(ctx, rec, "issuer", path, { max: 300 }),
++    issuedOn: reqDate(ctx, rec, "issuedOn", path),
++    title: optText(ctx, rec, "title", path, { max: 300 }),
++    text: reqText(ctx, rec, "text", path, { multiline: true }),
++    cites: readArray(ctx, rec, "cites", path, KB_LIMITS.citesPerRuling, false).map((c, i) => readNodeRef(ctx, c, `${path}.cites[${i}]`)),
++    provenance: readProvenance(ctx, rec["provenance"], `${path}.provenance`),
++  };
++}
++
++export function readCorpus(ctx: Ctx, input: unknown): Corpus | null {
++  const rec = record(ctx, input, "$", ["documents", "relations", "rulings"]);
++  if (!rec) return null;
++  return {
++    documents: readArray(ctx, rec, "documents", "$", KB_LIMITS.documents, true).map((d, i) => readDocument(ctx, d, `documents[${i}]`)),
++    relations: readArray(ctx, rec, "relations", "$", KB_LIMITS.relations, false).map((r, i) => readRelation(ctx, r, `relations[${i}]`)),
++    rulings: readArray(ctx, rec, "rulings", "$", KB_LIMITS.rulings, false).map((r, i) => readRuling(ctx, r, `rulings[${i}]`)),
++  };
++}
+diff --git a/src/modules/legal-kb-schema/reader.ts b/src/modules/legal-kb-schema/reader.ts
+new file mode 100644
+index 0000000..5507ae9
+--- /dev/null
++++ b/src/modules/legal-kb-schema/reader.ts
+@@ -0,0 +1,166 @@
++/**
++ * خواننده‌های سخت‌گیرِ مرزی برای ورودی `unknown` (داخلی).
++ * قاعده: هر خطا یک مسئلهٔ دقیق با مسیر؛ مقدار جایگزین فقط برای ادامهٔ بررسی است و هرگز به خروجی نمی‌رسد.
++ */
++import { canonicalArticleLabel } from "./label";
++import { isValidIsoDate } from "./dates";
++import { addIssue, KB_LIMITS, type Ctx } from "./issues";
++import type { IsoDate } from "./types";
++
++export type Rec = Readonly<Record<string, unknown>>;
++
++export function isPlainObject(v: unknown): v is Rec {
++  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
++  const proto = Object.getPrototypeOf(v);
++  return proto === Object.prototype || proto === null;
++}
++
++/** نویسه‌های کنترلی، علامت‌های جهت‌دهی «Trojan Source» و BOM؛ (تب و خط‌جدید و RLM/LRM مجازند.) */
++const FORBIDDEN_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069\uFEFF]/;
++
++export function record(ctx: Ctx, v: unknown, path: string, allowed: readonly string[]): Rec | null {
++  if (!isPlainObject(v)) {
++    addIssue(ctx, "INVALID_FIELD", path, "باید یک شیء (object) باشد.");
++    return null;
++  }
++  for (const k of Object.keys(v)) {
++    if (!allowed.includes(k)) addIssue(ctx, "UNKNOWN_FIELD", `${path}.${k}`, `کلید ناشناخته «${k}»؛ کلیدهای مجاز: ${allowed.join("، ")}.`);
++  }
++  return v;
++}
++
++function has(rec: Rec, key: string): boolean {
++  return Object.prototype.hasOwnProperty.call(rec, key) && rec[key] !== undefined;
++}
++
++export function readArray(ctx: Ctx, rec: Rec, key: string, path: string, max: number, required: boolean): readonly unknown[] {
++  const p = `${path}.${key}`;
++  if (!has(rec, key)) {
++    if (required) addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است.");
++    return [];
++  }
++  const v = rec[key];
++  if (!Array.isArray(v)) {
++    addIssue(ctx, "INVALID_FIELD", p, "باید آرایه باشد.");
++    return [];
++  }
++  if (v.length > max) {
++    addIssue(ctx, "LIMIT_EXCEEDED", p, `حداکثر ${max} عضو مجاز است.`);
++    return [];
++  }
++  // Array.from خانه‌های خالیِ آرایهٔ تُنُک (sparse) را به undefined تبدیل می‌کند تا خواندنِ عضو آن را مسئله کند؛
++  // `.map` مستقیم روی آرایهٔ تُنُک خانه‌های خالی را بی‌صدا رد می‌کرد (باگی که تست فازی گرفت).
++  return Array.from(v);
++}
++
++type TextOpts = Readonly<{ multiline?: boolean; max?: number }>;
++
++function cleanText(ctx: Ctx, raw: unknown, p: string, opts: TextOpts): string | null {
++  if (typeof raw !== "string") {
++    addIssue(ctx, "INVALID_FIELD", p, "باید متن باشد.");
++    return null;
++  }
++  const multiline = opts.multiline === true;
++  const max = opts.max ?? (multiline ? KB_LIMITS.textChars : KB_LIMITS.lineChars);
++  const s = (multiline ? raw.replace(/\r\n?/g, "\n") : raw).trim();
++  if (s === "") {
++    addIssue(ctx, "INVALID_FIELD", p, "نباید خالی باشد.");
++    return null;
++  }
++  if (s.length > max) {
++    addIssue(ctx, "LIMIT_EXCEEDED", p, `حداکثر ${max} نویسه مجاز است.`);
++    return null;
++  }
++  if (FORBIDDEN_CHARS.test(s)) {
++    addIssue(ctx, "INVALID_FIELD", p, "نویسهٔ کنترلی یا علامت جهت‌دهی ممنوع دارد.");
++    return null;
++  }
++  if (!multiline && s.indexOf("\n") >= 0) {
++    addIssue(ctx, "INVALID_FIELD", p, "باید تک‌خطی باشد.");
++    return null;
++  }
++  return s;
++}
++
++export function reqText(ctx: Ctx, rec: Rec, key: string, path: string, opts: TextOpts = {}): string {
++  const p = `${path}.${key}`;
++  if (!has(rec, key)) {
++    addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است.");
++    return "";
++  }
++  return cleanText(ctx, rec[key], p, opts) ?? "";
++}
++
++/** اختیاری: غایب یا `null` ⇒ `null`. */
++export function optText(ctx: Ctx, rec: Rec, key: string, path: string, opts: TextOpts = {}): string | null {
++  if (!has(rec, key) || rec[key] === null) return null;
++  return cleanText(ctx, rec[key], `${path}.${key}`, opts);
++}
++
++export function reqEnum<T extends string>(ctx: Ctx, rec: Rec, key: string, path: string, list: readonly T[], fallback: T): T {
++  const p = `${path}.${key}`;
++  if (!has(rec, key)) {
++    addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است.");
++    return fallback;
++  }
++  const v = rec[key];
++  if (typeof v === "string" && (list as readonly string[]).includes(v)) return v as T;
++  addIssue(ctx, "INVALID_FIELD", p, `مقدار باید یکی از این‌ها باشد: ${list.join("، ")}.`);
++  return fallback;
++}
++
++function readDateValue(ctx: Ctx, v: unknown, p: string): IsoDate | null {
++  if (isValidIsoDate(v)) return v;
++  addIssue(ctx, "INVALID_FIELD", p, "تاریخ باید میلادی و با قالب YYYY-MM-DD (و واقعاً موجود در تقویم) باشد.");
++  return null;
++}
++
++export function reqDate(ctx: Ctx, rec: Rec, key: string, path: string): IsoDate {
++  const p = `${path}.${key}`;
++  if (!has(rec, key)) {
++    addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است.");
++    return "1900-01-01";
++  }
++  return readDateValue(ctx, rec[key], p) ?? "1900-01-01";
++}
++
++/** کلید باید **صریحاً** بیاید؛ مقدار `null` مجاز است (برای جلوگیری از «فراموشی بی‌صدا»). */
++export function explicitNullableDate(ctx: Ctx, rec: Rec, key: string, path: string): IsoDate | null {
++  const p = `${path}.${key}`;
++  if (!has(rec, key)) {
++    addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است؛ اگر ناشناخته یا بی‌پایان است صریحاً null بگذارید.");
++    return null;
++  }
++  if (rec[key] === null) return null;
++  return readDateValue(ctx, rec[key], p);
++}
++
++export function optDate(ctx: Ctx, rec: Rec, key: string, path: string): IsoDate | null {
++  if (!has(rec, key) || rec[key] === null) return null;
++  return readDateValue(ctx, rec[key], `${path}.${key}`);
++}
++
++export function optUrl(ctx: Ctx, rec: Rec, key: string, path: string): string | null {
++  if (!has(rec, key) || rec[key] === null) return null;
++  const p = `${path}.${key}`;
++  const v = rec[key];
++  if (typeof v !== "string" || v.length > KB_LIMITS.urlChars || !/^https?:\/\/[^\s<>"']+$/i.test(v)) {
++    addIssue(ctx, "INVALID_FIELD", p, "نشانی باید با http:// یا https:// شروع شود، بدون فاصله باشد و حداکثر ۲۰۴۸ نویسه.");
++    return null;
++  }
++  return v;
++}
++
++/** برچسب ماده را به شکل متعارف درمی‌آورد؛ خطا ⇒ مسئله. */
++export function articleLabelValue(ctx: Ctx, v: unknown, p: string): string {
++  if (typeof v !== "string") {
++    addIssue(ctx, "INVALID_FIELD", p, "برچسب ماده باید متن باشد.");
++    return "";
++  }
++  const r = canonicalArticleLabel(v);
++  if (!r.ok) {
++    addIssue(ctx, "INVALID_FIELD", p, r.error.message);
++    return "";
++  }
++  return r.value;
++}
+diff --git a/src/modules/legal-kb-schema/sample-corpus.ts b/src/modules/legal-kb-schema/sample-corpus.ts
+new file mode 100644
+index 0000000..7c79c26
+--- /dev/null
++++ b/src/modules/legal-kb-schema/sample-corpus.ts
+@@ -0,0 +1,138 @@
++/**
++ * ⚠️ نمونهٔ **ساختگی** — هیچ قانون، ماده یا رأی واقعی نیست و هیچ ارزش حقوقی ندارد.
++ * فقط برای تست و میز آزمایش (و تست ماژول‌های بعدی مثل store/verifier) است. هرگز به‌عنوان «داده‌ٔ قانون» استفاده نشود.
++ * داده‌های واقعی فقط از منبع رسمی و با تأیید حقوقدان وارد می‌شوند (AGENTS.md).
++ *
++ * ساختار عمداً همهٔ حالت‌های مهم را دارد: نسخه‌های پیوسته، شکاف اعتبار، ماده‌ی نسخ‌شده، «مکرر»، «واحده»،
++ * تبصره/بند، رابطه (اجرا، اصلاح، نسخ) و رأی؛ و ترکیب تأییدشده/تأییدنشده.
++ */
++
++const pending = (sourceName: string) => ({
++  sourceName,
++  sourceUrl: null,
++  sourceKind: "secondary" as const,
++  retrievedOn: "2025-01-10",
++  review: { status: "pending-legal-review" as const, reviewedBy: null, reviewedOn: null },
++});
++
++const verified = (sourceName: string) => ({
++  sourceName,
++  sourceUrl: "https://example.org/fictional-source",
++  sourceKind: "official" as const,
++  retrievedOn: "2025-01-10",
++  review: { status: "legally-verified" as const, reviewedBy: "بازبین فرضی", reviewedOn: "2025-02-01" },
++});
++
++export const FICTIONAL_SAMPLE_CORPUS = {
++  documents: [
++    {
++      id: "sample-law",
++      kind: "statute",
++      title: "قانون نمونهٔ آزمایشی (ساختگی)",
++      shortTitle: "قانون نمونه",
++      enactedOn: "2001-01-01",
++      provenance: pending("منبع ساختگی"),
++      articles: [
++        {
++          label: "1",
++          versions: [
++            { validFrom: "2001-01-01", validTo: "2010-06-01", text: "متن ساختگی ماده ۱، نسخهٔ نخست. بدون ارزش حقوقی.", subparts: [], provenance: verified("منبع ساختگی ۱") },
++            {
++              validFrom: "2010-06-01",
++              validTo: "2015-01-01",
++              text: "متن ساختگی ماده ۱، نسخهٔ دوم. بدون ارزش حقوقی.",
++              subparts: [{ kind: "note", label: "1", text: "تبصرهٔ ساختگی نسخهٔ دوم." }],
++              provenance: pending("منبع ساختگی ۲"),
++            },
++            // شکاف عمدی: ۲۰۱۵-۰۱-۰۱ تا ۲۰۱۸-۰۱-۰۱ ماده معتبر نیست.
++            { validFrom: "2018-01-01", validTo: null, text: "متن ساختگی ماده ۱، نسخهٔ سوم. بدون ارزش حقوقی.", subparts: [], provenance: pending("منبع ساختگی ۳") },
++          ],
++        },
++        {
++          label: "2",
++          versions: [
++            {
++              validFrom: "2001-01-01",
++              validTo: null,
++              text: "متن ساختگی ماده ۲.",
++              subparts: [
++                { kind: "note", label: "1", text: "تبصرهٔ ۱ ساختگی." },
++                { kind: "clause", label: "الف", text: "بند الف ساختگی." },
++                { kind: "clause", label: "ب", text: "بند ب ساختگی." },
++              ],
++              provenance: verified("منبع ساختگی ۴"),
++            },
++          ],
++        },
++        {
++          label: "2 مکرر",
++          versions: [{ validFrom: "2012-05-01", validTo: null, text: "متن ساختگی ماده ۲ مکرر.", subparts: [], provenance: pending("منبع ساختگی ۵") }],
++        },
++      ],
++    },
++    {
++      id: "sample-single-act",
++      kind: "statute",
++      title: "قانون ماده‌واحده‌ای نمونه (ساختگی؛ نسخ‌شده)",
++      shortTitle: null,
++      enactedOn: "2005-01-01",
++      provenance: pending("منبع ساختگی ۶"),
++      articles: [
++        {
++          label: "واحده",
++          versions: [{ validFrom: "2005-01-01", validTo: "2020-01-01", text: "متن ساختگی ماده واحده.", subparts: [], provenance: pending("منبع ساختگی ۶") }],
++        },
++      ],
++    },
++    {
++      id: "sample-regulation",
++      kind: "regulation",
++      title: "آیین‌نامهٔ اجرایی نمونه (ساختگی)",
++      shortTitle: null,
++      enactedOn: "2003-01-01",
++      provenance: pending("منبع ساختگی ۷"),
++      articles: [
++        { label: "1", versions: [{ validFrom: "2003-01-01", validTo: null, text: "متن ساختگی ماده ۱ آیین‌نامه.", subparts: [], provenance: pending("منبع ساختگی ۷") }] },
++      ],
++    },
++  ],
++  relations: [
++    {
++      type: "implements",
++      from: { documentId: "sample-regulation", article: null },
++      to: { documentId: "sample-law", article: null },
++      effectiveFrom: "2003-01-01",
++      note: null,
++      provenance: pending("منبع ساختگی ۷"),
++    },
++    {
++      type: "amends",
++      from: { documentId: "sample-law", article: "2" },
++      to: { documentId: "sample-law", article: "1" },
++      effectiveFrom: "2010-06-01",
++      note: "رابطهٔ ساختگی برای آزمون.",
++      provenance: pending("منبع ساختگی ۸"),
++    },
++    {
++      type: "repeals",
++      from: { documentId: "sample-law", article: null },
++      to: { documentId: "sample-single-act", article: null },
++      effectiveFrom: "2020-01-01",
++      note: null,
++      provenance: pending("منبع ساختگی ۸"),
++    },
++  ],
++  rulings: [
++    {
++      id: "sample-unity-ruling-1",
++      kind: "unity-ruling",
++      number: "1",
++      issuer: "مرجع ساختگی",
++      issuedOn: "2016-03-01",
++      title: "رأی نمونهٔ ساختگی",
++      text: "متن ساختگی رأی. بدون ارزش حقوقی.",
++      cites: [{ documentId: "sample-law", article: "2" }],
++      provenance: pending("منبع ساختگی ۹"),
++    },
++  ],
++} as const;
+diff --git a/src/modules/legal-kb-schema/types.ts b/src/modules/legal-kb-schema/types.ts
+new file mode 100644
+index 0000000..6569e5d
+--- /dev/null
++++ b/src/modules/legal-kb-schema/types.ts
+@@ -0,0 +1,183 @@
++/**
++ * legal-kb-schema — شکل داده‌ی پایگاه دانش قانون (فقط نوع؛ بدون منطق و بدون داده‌ی حقوقی).
++ *
++ * اصل‌های طراحی (جزئیات: docs/adr/0003-legal-kb-schema.md):
++ *  - تاریخ‌ها در مدل **فقط میلادیِ ISO** (`YYYY-MM-DD`) هستند؛ تبدیل از/به جلالی کار مرز (ingest/رابط) است.
++ *  - شناسهٔ ماده و نسخه **محاسبه‌شده** است، نه ورودی: «سند + برچسب ماده» و «ماده + تاریخ شروع». پس شناسهٔ ناسازگار ممکن نیست.
++ *  - هر رکورد منبع و وضعیت بازبینی دارد؛ پیش‌فرض همیشه «تأییدنشده» است.
++ */
++
++/** تاریخ میلادی با قالب `YYYY-MM-DD` (اعتبارسنجی‌شده؛ مقایسهٔ رشته‌ای = مقایسهٔ زمانی). */
++export type IsoDate = string;
++
++/** نوع سند حقوقی. فهرست بسته؛ افزودن نوع = تغییر شما (ADR-0003). */
++export type DocumentKind =
++  | "constitution" // قانون اساسی (واحد: «اصل»)
++  | "statute" // قانون (مصوب مجلس)
++  | "regulation" // آیین‌نامه
++  | "directive" // دستورالعمل / بخشنامه
++  | "approval"; // مصوبه (شورای عالی … و مانند آن)
++
++export const DOCUMENT_KINDS: readonly DocumentKind[] = ["constitution", "statute", "regulation", "directive", "approval"];
++
++export type RulingKind =
++  | "unity-ruling" // رأی وحدت رویه
++  | "constitutional-opinion" // نظر شورای نگهبان
++  | "advisory-opinion" // نظریهٔ مشورتی
++  | "judgment"; // رأی دادگاه
++
++export const RULING_KINDS: readonly RulingKind[] = ["unity-ruling", "constitutional-opinion", "advisory-opinion", "judgment"];
++
++/** نوع رابطه؛ جهت: `from` ← کنشگر، `to` ← هدف. */
++export type RelationType =
++  | "amends" // from متنِ to را اصلاح می‌کند
++  | "repeals" // from، to را نسخ می‌کند
++  | "replaces" // from جایگزین to می‌شود
++  | "refers-to" // from به to ارجاع می‌دهد
++  | "implements" // from (مثلاً آیین‌نامه) برای اجرای to است
++  | "interprets"; // from (مثلاً رأی/نظر) to را تفسیر می‌کند
++
++export const RELATION_TYPES: readonly RelationType[] = ["amends", "repeals", "replaces", "refers-to", "implements", "interprets"];
++
++export type ReviewStatus = "pending-legal-review" | "legally-verified";
++
++export type Review = Readonly<{
++  status: ReviewStatus;
++  /** فقط وقتی `legally-verified` است پر می‌شود. */
++  reviewedBy: string | null;
++  reviewedOn: IsoDate | null;
++}>;
++
++export type SourceKind =
++  /** متن رسمی (روزنامهٔ رسمی، پایگاه رسمی مجلس/مرکز پژوهش‌ها و مانند آن) */
++  | "official"
++  /** نقل ثانویه (سایت‌های حقوقی، کتاب، …)؛ تا تأیید حقوقدان معتبر نیست */
++  | "secondary";
++
++export type Provenance = Readonly<{
++  sourceName: string;
++  sourceUrl: string | null;
++  sourceKind: SourceKind;
++  /** تاریخ دریافت از منبع (از بیرون می‌آید؛ ماژول ساعت ندارد). */
++  retrievedOn: IsoDate | null;
++  review: Review;
++}>;
++
++/** بخش درون ماده: تبصره یا بند. برچسب: عدد لاتین (`1`) یا حروف فارسی (`الف`). */
++export type SubpartKind = "note" | "clause";
++
++export const SUBPART_KINDS: readonly SubpartKind[] = ["note", "clause"];
++
++export type Subpart = Readonly<{ kind: SubpartKind; label: string; text: string }>;
++
++/**
++ * یک نسخهٔ متن ماده. بازهٔ اعتبار **نیم‌باز** است: `[validFrom, validTo)`.
++ *  - `validFrom`: نخستین روزی که این متن معتبر است.
++ *  - `validTo`: نخستین روزی که دیگر معتبر نیست (= `validFrom` نسخهٔ بعدی)؛ `null` یعنی هنوز معتبر.
++ * نسخهٔ «نسخ‌شده» متن ندارد: فقط بازهٔ نسخهٔ آخر بسته می‌شود (و رابطهٔ `repeals` ثبت می‌شود).
++ */
++export type ArticleVersion = Readonly<{
++  validFrom: IsoDate;
++  validTo: IsoDate | null;
++  text: string;
++  subparts: readonly Subpart[];
++  provenance: Provenance;
++}>;
++
++/** `label`: شکل متعارفِ برچسب ماده، مثل `10`، `10 مکرر`، `10 مکرر 2` یا `واحده`. */
++export type Article = Readonly<{
++  label: string;
++  /** حداقل یک نسخه؛ مرتب بر اساس `validFrom`. */
++  versions: readonly ArticleVersion[];
++}>;
++
++export type LawDocument = Readonly<{
++  /** شناسهٔ لاتین کوتاه، مثل `sample-law`؛ حروف کوچک، عدد و خط تیره. */
++  id: string;
++  kind: DocumentKind;
++  title: string;
++  shortTitle: string | null;
++  enactedOn: IsoDate | null;
++  provenance: Provenance;
++  articles: readonly Article[];
++}>;
++
++/** اشاره به یک سند یا یک ماده؛ `article = null` یعنی کل سند. */
++export type NodeRef = Readonly<{ documentId: string; article: string | null }>;
++
++export type Relation = Readonly<{
++  type: RelationType;
++  from: NodeRef;
++  to: NodeRef;
++  /** تاریخ اثر رابطه (مثلاً شروع اعتبار اصلاح)؛ صریح و در صورت ناشناخته `null`. */
++  effectiveFrom: IsoDate | null;
++  note: string | null;
++  provenance: Provenance;
++}>;
++
++export type Ruling = Readonly<{
++  /** شناسهٔ لاتین یکتا */
++  id: string;
++  kind: RulingKind;
++  /** شمارهٔ رأی/نظر؛ متن آزاد کوتاه */
++  number: string;
++  issuer: string;
++  issuedOn: IsoDate;
++  title: string | null;
++  text: string;
++  /** مواد/اسنادی که رأی به آن‌ها ارجاع دارد (باید در پایگاه موجود باشند). */
++  cites: readonly NodeRef[];
++  provenance: Provenance;
++}>;
++
++export type Corpus = Readonly<{
++  documents: readonly LawDocument[];
++  relations: readonly Relation[];
++  rulings: readonly Ruling[];
++}>;
++
++/** ارجاع دقیق به ماده (و در صورت نیاز تبصره/بند) برای راستی‌آزمایی. */
++export type CitationRef = Readonly<{
++  documentId: string;
++  /** برچسب متعارف ماده */
++  article: string;
++  subpart: Readonly<{ kind: SubpartKind; label: string }> | null;
++}>;
++
++export type IssueCode =
++  | "INVALID_FIELD" // نوع یا مقدار نادرست
++  | "MISSING_FIELD"
++  | "UNKNOWN_FIELD" // کلید ناشناخته (غلط املایی را بی‌صدا نمی‌پذیریم)
++  | "LIMIT_EXCEEDED"
++  | "DUPLICATE"
++  | "DANGLING_REF"
++  | "INVALID_INTERVAL"
++  | "VERSION_OVERLAP"
++  | "REVIEW_INCONSISTENT"
++  | "CONTRADICTORY_RELATION";
++
++export type CorpusIssue = Readonly<{
++  code: IssueCode;
++  /** مسیر در ورودی، مثل `documents[0].articles[2].versions[1].validFrom` */
++  path: string;
++  /** پیام فارسی */
++  message: string;
++}>;
++
++/** نتیجهٔ جست‌وجوی نسخهٔ معتبر در یک تاریخ. همهٔ حالت‌ها صریح‌اند؛ هیچ‌کدام «حدس» نیست. */
++export type VersionLookup =
++  | Readonly<{
++      status: "found";
++      documentId: string;
++      article: string;
++      version: ArticleVersion;
++      subpart: Subpart | null;
++      /** آیا این نسخه توسط حقوقدان تأیید شده؟ (`false` = قابل استناد به کاربر نیست.) */
++      verified: boolean;
++    }>
++  | Readonly<{ status: "unknown-document" }>
++  | Readonly<{ status: "unknown-article" }>
++  | Readonly<{ status: "unknown-subpart"; version: ArticleVersion }>
++  | Readonly<{ status: "not-yet-in-force"; firstValidFrom: IsoDate }>
++  | Readonly<{ status: "no-longer-in-force"; lastValidTo: IsoDate }>
++  | Readonly<{ status: "gap"; previousValidTo: IsoDate; nextValidFrom: IsoDate }>;
+diff --git a/tooling/mutation/legal-kb-schema.py b/tooling/mutation/legal-kb-schema.py
+new file mode 100644
+index 0000000..3a84c4b
+--- /dev/null
++++ b/tooling/mutation/legal-kb-schema.py
+@@ -0,0 +1,57 @@
++"""
++آزمون جهشی دستی برای legal-kb-schema: هر جهش را اعمال می‌کند، تست‌های ماژول را اجرا می‌کند و فایل را برمی‌گرداند.
++هر جهش باید «KILLED» شود (تست قرمز). «SURVIVED» = تست ضعیف یا کد مرده. فقط با Python 3 استاندارد؛ جزو CI نیست.
++اجرا: python3 tooling/mutation/legal-kb-schema.py
++"""
++import subprocess, sys
++import os
++ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__),'..','..'))
++D=os.path.join(ROOT,'src/modules/legal-kb-schema')+'/'
++M=[
++ ('lookup.ts','compareIsoDates(date, v.validTo) < 0','compareIsoDates(date, v.validTo) <= 0'),
++ ('lookup.ts','if (compareIsoDates(date, v.validFrom) < 0) {','if (compareIsoDates(date, v.validFrom) <= 0) {'),
++ ('lookup.ts','verified: found.provenance.review.status === "legally-verified",','verified: true,'),
++ ('lookup.ts','return Array.from(new Set([...docLevel, ...exact]));','return [...docLevel, ...exact];'),
++ ('lookup.ts','if (!entry) return ok({ status: "unknown-article" });','if (!entry) return ok({ status: "unknown-document" });'),
++ ('integrity.ts','compareIsoDates(a.validTo, b.validFrom) > 0)','compareIsoDates(a.validTo, b.validFrom) >= 0)'),
++ ('integrity.ts','compareIsoDates(v.validTo, v.validFrom) <= 0','compareIsoDates(v.validTo, v.validFrom) < 0'),
++ ('integrity.ts','a.validTo === null || compareIsoDates','false || compareIsoDates'),
++ ('integrity.ts','if (directional.has(`${r.type}|${to}|${from}`)) {','if (false) {'),
++ ('integrity.ts','else if (r.article !== null && !labels.has(r.article))','else if (false)'),
++ ('integrity.ts','if (from === to) addIssue','if (false) addIssue'),
++ ('integrity.ts','if (a.validFrom === b.validFrom) {','if (false) {'),
++ ('reader.ts','return Array.from(v);','return v;'),
++ ('reader.ts','\\u202A-\\u202E','\\u202A-\\u202D'),
++ ('reader.ts','if (!allowed.includes(k))','if (false)'),
++ ('reader.ts','return proto === Object.prototype || proto === null;','return true;'),
++ ('reader.ts','if (!has(rec, key)) {\n    addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است؛ اگر','if (false) {\n    addIssue(ctx, "MISSING_FIELD", p, "این کلید الزامی است؛ اگر'),
++ ('reader.ts','(multiline ? raw.replace(/\\r\\n?/g, "\\n") : raw).trim()','raw'),
++ ('parse.ts','if (v === undefined) return PENDING;','if (v === undefined) return { status: "legally-verified", reviewedBy: "x", reviewedOn: "2000-01-01" };'),
++ ('parse.ts','if (status === "pending-legal-review" && (reviewedBy !== null || reviewedOn !== null))','if (false)'),
++ ('parse.ts','if (status === "legally-verified" && (reviewedBy === null || reviewedOn === null))','if (status === "legally-verified" && (reviewedBy === null && reviewedOn === null))'),
++ ('load.ts','.map((a) => ({ ...a, versions: [...a.versions].sort((x, y) => compareIsoDates(x.validFrom, y.validFrom)) }))','.map((a) => ({ ...a }))'),
++ ('load.ts','if (corpus && ctx.issues.length === 0) checkIntegrity(corpus, ctx);','if (corpus) checkIntegrity(corpus, ctx);'),
++ ('dates.ts','(y % 4 === 0 && y % 100 !== 0) || y % 400 === 0','y % 4 === 0'),
++ ('dates.ts','MIN_ISO_YEAR = 1800','MIN_ISO_YEAR = 1000'),
++ ('label.ts','if (repeat < 2 || repeat > MAX_REPEAT)','if (repeat < 1 || repeat > MAX_REPEAT)'),
++ ('label.ts','if (articleKey({ kind: "numbered", number, repeat }) !== key)','if (false)'),
++ ('label.ts','if (n < 1) return err("OUT_OF_RANGE", "شمارهٔ تبصره/بند','if (n < 0) return err("OUT_OF_RANGE", "شمارهٔ تبصره/بند'),
++ ('label.ts','return a.number - b.number || a.repeat - b.repeat;','return a.number - b.number;'),
++ ('label.ts','ch === "ك") out += "ک"','ch === "ك") out += "ك"'),
++ ('issues.ts','if (ctx.issues.length >= KB_LIMITS.maxIssues) {','if (ctx.issues.length >= 100000) {'),
++ ('reader.ts','!/^https?:\\/\\/[^\\s<>"\']+$/i.test(v)','false'),
++]
++survived=[]
++for f,a,b in M:
++    p=D+f
++    s=open(p,encoding='utf8').read()
++    if a not in s:
++        print('NOT FOUND',f,a[:50]); survived.append(('NOTFOUND',f,a)); continue
++    open(p,'w',encoding='utf8').write(s.replace(a,b,1))
++    r=subprocess.run(['npx','vitest','run','src/modules/legal-kb-schema'],cwd=ROOT,capture_output=True,text=True)
++    open(p,'w',encoding='utf8').write(s)
++    killed = r.returncode!=0
++    print('KILLED ' if killed else 'SURVIVED',f,a[:60].replace('\n',' '))
++    if not killed: survived.append((f,a))
++print('SURVIVORS',len(survived))
++for x in survived: print(x)
+-- 
+2.39.5
+

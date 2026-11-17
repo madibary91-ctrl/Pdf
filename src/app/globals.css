@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Vazirmatn Variable", Vazirmatn, Tahoma, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --color-ink-50: #f3f6f8;
+  --color-ink-100: #e4ebf0;
+  --color-ink-200: #c9d7e0;
+  --color-ink-300: #9fb5c4;
+  --color-ink-500: #4f7087;
+  --color-ink-700: #243f52;
+  --color-ink-800: #172c3a;
+  --color-ink-900: #0e1d28;
+  --color-gold-100: #fbf1d9;
+  --color-gold-500: #b8862b;
+  --color-gold-700: #7d5a14;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 85% -10%, #e7eef3 0%, transparent 60%),
+    #f7f8f6;
+  font-feature-settings: "ss01";
+}
+
+::selection {
+  background: var(--color-gold-100);
+  color: var(--color-ink-900);
+}
+
+.ltr-field {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: plaintext;
+}
