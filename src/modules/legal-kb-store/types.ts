@@ -6,7 +6,7 @@
  * (درخواست معماری در یادداشت تحویل ۰۰۰۶).
  */
 import type { SQL } from "drizzle-orm";
-import type { CorpusIssue } from "@/modules/legal-kb-schema";
+import type { CorpusIssue, IsoDate, Review, Subpart } from "@/modules/legal-kb-schema";
 
 /**
  * فقط `execute` (برای تابع‌هایی که داخل تراکنش یا بیرون آن اجرا می‌شوند).
@@ -36,6 +36,8 @@ export type StoreErrorCode =
   | "MIGRATION_TAMPERED" // مهاجرتِ اعمال‌شده با کد فعلی نمی‌خواند (checksum) یا حفره دارد
   | "MIGRATION_UNKNOWN" // پایگاه مهاجرتی دارد که این نسخهٔ کد نمی‌شناسد (پایگاه از آینده)
   | "CONSTRAINT_VIOLATION" // قید پایگاه (CHECK/FK/EXCLUDE/دادهٔ نامعتبر) رد کرد
+  | "NOT_FOUND" // نسخه‌ای که می‌خواهید تغییر دهید در پایگاه نیست
+  | "CONFLICT" // محتوا/وضعیت نسخه با آنچه بازبین دیده یا انتظار می‌رفت نمی‌خواند (هش، یا وضعیت نادرست برای این کنش)
   | "CORRUPT_DATA" // دادهٔ ذخیره‌شده با قواعد مدل نمی‌خواند؛ هرگز «حدس» نمی‌زنیم
   | "DB_ERROR"; // هر خطای دیگر پایگاه (اتصال، زمان‌سنج، …)
 
@@ -92,3 +94,49 @@ export type StoreStats = Readonly<{
   verifiedVersions: number;
   migrations: readonly string[];
 }>;
+
+// ───────── بخش ۴ب‑۲: مسیر اعتماد (تأیید، پس‌گرفتن، اصلاح) و ممیزی ─────────
+
+/** شناسهٔ یک نسخهٔ ماده: همان کلید طبیعی (سند، ماده، شروع اعتبار). */
+export type VersionRef = Readonly<{ documentId: string; article: string; validFrom: IsoDate }>;
+
+/** آنچه حقوقدان «می‌بیند و تأیید می‌کند»: متن + تبصره/بندها + وضعیت بازبینی؛ `contentHash` هش متن و تبصره‌هاست. */
+export type VersionSnapshot = Readonly<{ text: string; subparts: readonly Subpart[]; review: Review; contentHash: string }>;
+
+export type AuditAction = "verify" | "revoke" | "correct";
+
+export type VersionChange = Readonly<{
+  action: AuditAction;
+  ref: VersionRef;
+  /** شمارهٔ رکورد ممیزی (فقط‌افزودنی، صعودی). */
+  auditSeq: number;
+  before: VersionSnapshot;
+  after: VersionSnapshot;
+}>;
+
+export type AuditEntry = Readonly<{
+  seq: number;
+  /** لحظهٔ ثبت (ساعت پایگاه، UTC، ISO-8601). */
+  at: string;
+  action: AuditAction;
+  ref: VersionRef;
+  actor: string;
+  actedOn: IsoDate;
+  reason: string | null;
+  before: VersionSnapshot;
+  after: VersionSnapshot;
+}>;
+
+/** `expectedHash` = `versionContentHash` همان متنی که بازبین دیده؛ اگر متن در این فاصله عوض شده باشد، تأیید رد می‌شود. */
+export type VerifyInput = Readonly<{ expectedHash: string; reviewedBy: string; reviewedOn: IsoDate }>;
+export type RevokeInput = Readonly<{ expectedHash: string; revokedBy: string; revokedOn: IsoDate; reason: string }>;
+export type CorrectInput = Readonly<{
+  expectedHash: string;
+  text: string;
+  subparts: readonly Subpart[];
+  correctedBy: string;
+  correctedOn: IsoDate;
+  reason: string;
+}>;
+
+export type AuditQueryOptions = Readonly<{ limit?: number }>;

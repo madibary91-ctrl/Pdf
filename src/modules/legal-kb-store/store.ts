@@ -1,11 +1,28 @@
 /** `createKbStore`: تنها نقطهٔ ساخت. اتصال را از بیرون می‌گیرد (تزریق) و هیچ متغیر محیطی یا اتصال سراسری نمی‌خواند. */
 import type { Corpus, CitationRef, InForceEntry, IsoDate, VersionLookup } from "@/modules/legal-kb-schema";
+import { insertIncremental } from "./incremental";
 import { insertCorpus } from "./insert";
 import { migrate, migrationStatus } from "./migrate";
 import { DEFAULT_SCHEMA, parseSchemaName } from "./naming";
 import { readCorpus, readStats } from "./read";
 import { resolveCitation, versionsInForceAt } from "./temporal";
-import type { InsertReport, KbDatabase, MigrationReport, MigrationStatus, StoreOptions, StoreResult, StoreStats } from "./types";
+import { correctVersion, listAudit, markVerified, revokeVerification } from "./trust";
+import type {
+  AuditEntry,
+  AuditQueryOptions,
+  CorrectInput,
+  InsertReport,
+  KbDatabase,
+  MigrationReport,
+  MigrationStatus,
+  RevokeInput,
+  StoreOptions,
+  StoreResult,
+  StoreStats,
+  VerifyInput,
+  VersionChange,
+  VersionRef,
+} from "./types";
 
 export type KbStore = Readonly<{
   /** نام شِمای پستگرس که این store روی آن کار می‌کند. */
@@ -16,6 +33,19 @@ export type KbStore = Readonly<{
   migrationStatus(): Promise<StoreResult<MigrationStatus>>;
   /** درج فقط‌افزودنی و اتمی یک Corpus خودبسنده. ورودی `unknown` است و از `loadCorpus` می‌گذرد. */
   insertCorpus(input: unknown): Promise<StoreResult<InsertReport>>;
+  /**
+   * درج فقط‌افزودنیِ Corpus که می‌تواند به اسناد/مواد **موجود در پایگاه** ارجاع دهد (آیین‌نامه، اصلاحیه، رأی).
+   * اعتبارسنجی با اسکلت سندهای موجود انجام می‌شود؛ فقط بخش نو درج می‌شود.
+   */
+  insertIncremental(input: unknown): Promise<StoreResult<InsertReport>>;
+  /** تأیید حقوقدان روی یک نسخه، با ممیزی در همان تراکنش؛ `expectedHash` = هش متنی که بازبین دیده. */
+  markVerified(ref: VersionRef, input: VerifyInput): Promise<StoreResult<VersionChange>>;
+  /** پس‌گرفتن تأیید (با دلیل لازم) و ممیزی. */
+  revokeVerification(ref: VersionRef, input: RevokeInput): Promise<StoreResult<VersionChange>>;
+  /** اصلاح متن/تبصره‌های یک نسخه (مثلاً غلط تایپی) با دلیل؛ تأیید پاک می‌شود و متن پیشین در ممیزی می‌ماند. */
+  correctVersion(ref: VersionRef, input: CorrectInput): Promise<StoreResult<VersionChange>>;
+  /** تاریخچهٔ فقط‌افزودنیِ تغییرها؛ `ref = null` یعنی همهٔ نسخه‌ها. */
+  listAudit(ref: VersionRef | null, options?: AuditQueryOptions): Promise<StoreResult<readonly AuditEntry[]>>;
   /** کل پایگاه به‌صورت Corpus متعارف (بازاعتبارسنجی‌شده). */
   readCorpus(): Promise<StoreResult<Corpus>>;
   /** همان معنای `resolveCitation` در legal-kb-schema، اما از پایگاه. */
@@ -36,6 +66,11 @@ export function createKbStore(db: KbDatabase, options: StoreOptions = {}): Store
       migrate: () => migrate(db, schema),
       migrationStatus: () => migrationStatus(db, schema),
       insertCorpus: (input: unknown) => insertCorpus(db, schema, input),
+      insertIncremental: (input: unknown) => insertIncremental(db, schema, input),
+      markVerified: (ref: VersionRef, input: VerifyInput) => markVerified(db, schema, ref, input),
+      revokeVerification: (ref: VersionRef, input: RevokeInput) => revokeVerification(db, schema, ref, input),
+      correctVersion: (ref: VersionRef, input: CorrectInput) => correctVersion(db, schema, ref, input),
+      listAudit: (ref: VersionRef | null, options?: AuditQueryOptions) => listAudit(db, schema, ref, options),
       readCorpus: () => readCorpus(db, schema),
       resolveCitation: (ref: CitationRef, onDate: IsoDate) => resolveCitation(db, schema, ref, onDate),
       versionsInForceAt: (onDate: IsoDate) => versionsInForceAt(db, schema, onDate),

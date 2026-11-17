@@ -187,15 +187,61 @@ const m0001: Migration = {
   ],
 };
 
+const A = "{{audit_schema}}";
+
+/**
+ * ۰۰۰۲ — ممیزی نسخه‌ها (بخش ۴ب‑۲). فقط **افزودنی** است: به جدول‌های ۰۰۰۱ دست نمی‌زند.
+ * شِمای جدا (`<schema>_audit`): هم فهرست جدول‌های شِمای دانش ثابت می‌ماند، هم می‌شود نقش برنامه را فقط INSERT/SELECT داد.
+ * جدول فقط‌افزودنی است: UPDATE/DELETE/TRUNCATE با تریگر رد می‌شود (ابرکاربر می‌تواند تریگر را بردارد؛ این دفاع در برابر اشتباه است،
+ * نه در برابر مالک پایگاه). **عمداً کلید خارجی به `article_version` ندارد:** تاریخچهٔ ممیزی باید از ردیفی که به آن اشاره می‌کند
+ * بیشتر عمر کند (حتی اگر مالک پایگاه نسخه‌ای را با SQL پاک کند، رد پای «چه کسی چه چیزی را تأیید/اصلاح کرده بود» نمی‌ماند از بین)؛
+ * کلید طبیعی (سند، ماده، شروع اعتبار) به‌صورت ستون‌های ساده ثبت می‌شود.
+ */
+const m0002: Migration = {
+  name: "0002_version_audit",
+  statements: [
+    `CREATE SCHEMA ${A}`,
+    `CREATE TABLE ${A}.version_audit (
+       seq bigint GENERATED ALWAYS AS IDENTITY,
+       at timestamptz NOT NULL DEFAULT now(),
+       action text NOT NULL,
+       document_id text NOT NULL,
+       article_label text NOT NULL,
+       valid_from ${S}.iso_date NOT NULL,
+       actor ${S}.line_text NOT NULL,
+       acted_on ${S}.iso_date NOT NULL,
+       reason ${S}.body_text,
+       before_snapshot jsonb NOT NULL,
+       after_snapshot jsonb NOT NULL,
+       CONSTRAINT version_audit_pk PRIMARY KEY (seq),
+       CONSTRAINT version_audit_action_ck CHECK (action IN ('verify', 'revoke', 'correct')),
+       CONSTRAINT version_audit_actor_len_ck CHECK (char_length(actor) <= 200),
+       CONSTRAINT version_audit_reason_len_ck CHECK (char_length(reason) <= 2000),
+       CONSTRAINT version_audit_reason_required_ck CHECK (action = 'verify' OR reason IS NOT NULL),
+       CONSTRAINT version_audit_snapshots_ck CHECK (jsonb_typeof(before_snapshot) = 'object' AND jsonb_typeof(after_snapshot) = 'object')
+     )`,
+    `CREATE INDEX version_audit_target_ix ON ${A}.version_audit (document_id, article_label, valid_from, seq)`,
+    `CREATE FUNCTION ${A}.version_audit_append_only() RETURNS trigger LANGUAGE plpgsql AS $fn$
+     BEGIN
+       RAISE EXCEPTION 'version_audit is append-only (% is not allowed)', TG_OP USING ERRCODE = '23000';
+     END
+     $fn$`,
+    `CREATE TRIGGER version_audit_no_change BEFORE UPDATE OR DELETE ON ${A}.version_audit
+       FOR EACH ROW EXECUTE FUNCTION ${A}.version_audit_append_only()`,
+    `CREATE TRIGGER version_audit_no_truncate BEFORE TRUNCATE ON ${A}.version_audit
+       FOR EACH STATEMENT EXECUTE FUNCTION ${A}.version_audit_append_only()`,
+  ],
+};
+
 /** فهرست مرتب مهاجرت‌ها؛ فقط به انتها افزوده می‌شود. */
-export const MIGRATIONS: readonly Migration[] = [m0001];
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002];
 
 /** SHA-256 نام و دستورها؛ هر تغییر (حتی یک فاصله) در مهاجرتِ اعمال‌شده با «MIGRATION_TAMPERED» دیده می‌شود. */
 export function migrationChecksum(m: Migration): string {
   return createHash("sha256").update(JSON.stringify([m.name, m.statements])).digest("hex");
 }
 
-/** جایگزینی `{{schema}}` با نام نقل‌قول‌شده. `schema` باید پیشتر با `parseSchemaName` تأیید شده باشد. */
+/** جایگزینی `{{schema}}` و `{{audit_schema}}` با نام نقل‌قول‌شده. `schema` باید پیشتر با `parseSchemaName` تأیید شده باشد. */
 export function renderStatement(statement: string, schema: string): string {
-  return statement.split(S).join(`"${schema}"`);
+  return statement.split(S).join(`"${schema}"`).split(A).join(`"${schema}_audit"`);
 }

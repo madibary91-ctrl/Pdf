@@ -104,100 +104,109 @@ async function existingIds(ex: KbExecutor, schema: string, table: "document" | "
   return res.rows.map((r) => String(r["id"]));
 }
 
+/** درج فقط‌افزودنی: سند یا رأیی با شناسهٔ موجود ⇒ `ALREADY_EXISTS` و هیچ‌چیز نوشته نمی‌شود (بازنویسی بی‌صدا ممنوع). */
+export async function assertNoClashes(tx: KbExecutor, schema: string, corpus: Corpus): Promise<void> {
+  const clashes = [
+    ...(await existingIds(tx, schema, "document", corpus.documents.map((d) => d.id))).map((id) => `document:${id}`),
+    ...(await existingIds(tx, schema, "ruling", corpus.rulings.map((g) => g.id))).map((id) => `ruling:${id}`),
+  ];
+  if (clashes.length > 0) {
+    throw new StoreAbort({
+      code: "ALREADY_EXISTS",
+      message: `درج فقط‌افزودنی است و رکورد زیر از قبل هست؛ چیزی ذخیره نشد: ${clashes.join("، ")}`,
+      conflicts: clashes,
+    });
+  }
+}
+
+/** ردیف‌های تخت را (بدون هیچ بررسی دیگری) درج می‌کند؛ باید داخل تراکنشِ دارای قفل نوشتن و پس از `assertCurrent` صدا زده شود. */
+export async function insertFlat(tx: KbExecutor, schema: string, flat: FlatCorpus): Promise<InsertReport> {
+  const q = (t: Parameters<typeof tableRef>[1]) => tableRef(schema, t);
+  const documents = await insertRows(
+    tx,
+    flat.documents,
+    (json) => sql`WITH ins AS (
+      INSERT INTO ${q("document")} (seq, id, kind, title, short_title, enacted_on, ${sql.raw(PROV_COLS)})
+      SELECT (SELECT coalesce(max(seq), 0) FROM ${q("document")}) + t.idx + 1, t.id, t.kind, t.title, t.short_title, t.enacted_on, ${sql.raw(PROV_SEL)}
+      FROM jsonb_to_recordset(${json}::jsonb) AS t(idx integer, id text, kind text, title text, short_title text, enacted_on date, ${sql.raw(PROV_REC)})
+      ORDER BY t.idx
+      RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
+  );
+  const articles = await insertRows(
+    tx,
+    flat.articles,
+    (json) => sql`WITH ins AS (
+      INSERT INTO ${q("article")} (document_id, label, article_number, article_repeat)
+      SELECT t.document_id, t.label, t.article_number, t.article_repeat
+      FROM jsonb_to_recordset(${json}::jsonb) AS t(document_id text, label text, article_number integer, article_repeat integer)
+      RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
+  );
+  const versions = await insertRows(
+    tx,
+    flat.versions,
+    (json) => sql`WITH ins AS (
+      INSERT INTO ${q("article_version")} (document_id, article_label, valid_from, valid_to, body, ${sql.raw(PROV_COLS)})
+      SELECT t.document_id, t.article_label, t.valid_from, t.valid_to, t.body, ${sql.raw(PROV_SEL)}
+      FROM jsonb_to_recordset(${json}::jsonb) AS t(document_id text, article_label text, valid_from date, valid_to date, body text, ${sql.raw(PROV_REC)})
+      RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
+  );
+  const subparts = await insertRows(
+    tx,
+    flat.subparts,
+    (json) => sql`WITH ins AS (
+      INSERT INTO ${q("article_subpart")} (document_id, article_label, valid_from, ordinal, kind, label, body)
+      SELECT t.document_id, t.article_label, t.valid_from, t.ordinal, t.kind, t.label, t.body
+      FROM jsonb_to_recordset(${json}::jsonb) AS t(document_id text, article_label text, valid_from date, ordinal integer, kind text, label text, body text)
+      RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
+  );
+  const relations = await insertRows(
+    tx,
+    flat.relations,
+    (json) => sql`WITH ins AS (
+      INSERT INTO ${q("relation")} (seq, type, from_document_id, from_article, to_document_id, to_article, effective_from, note, ${sql.raw(PROV_COLS)})
+      SELECT (SELECT coalesce(max(seq), 0) FROM ${q("relation")}) + t.idx + 1, t.type, t.from_document_id, t.from_article, t.to_document_id, t.to_article,
+             t.effective_from, t.note, ${sql.raw(PROV_SEL)}
+      FROM jsonb_to_recordset(${json}::jsonb) AS t(idx integer, type text, from_document_id text, from_article text, to_document_id text, to_article text,
+                                                   effective_from date, note text, ${sql.raw(PROV_REC)})
+      ORDER BY t.idx
+      RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
+  );
+  const rulings = await insertRows(
+    tx,
+    flat.rulings,
+    (json) => sql`WITH ins AS (
+      INSERT INTO ${q("ruling")} (seq, id, kind, number, issuer, issued_on, title, body, ${sql.raw(PROV_COLS)})
+      SELECT (SELECT coalesce(max(seq), 0) FROM ${q("ruling")}) + t.idx + 1, t.id, t.kind, t.number, t.issuer, t.issued_on, t.title, t.body, ${sql.raw(PROV_SEL)}
+      FROM jsonb_to_recordset(${json}::jsonb) AS t(idx integer, id text, kind text, number text, issuer text, issued_on date, title text, body text, ${sql.raw(PROV_REC)})
+      ORDER BY t.idx
+      RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
+  );
+  const citations = await insertRows(
+    tx,
+    flat.cites,
+    (json) => sql`WITH ins AS (
+      INSERT INTO ${q("ruling_cite")} (ruling_id, ordinal, document_id, article_label)
+      SELECT t.ruling_id, t.ordinal, t.document_id, t.article_label
+      FROM jsonb_to_recordset(${json}::jsonb) AS t(ruling_id text, ordinal integer, document_id text, article_label text)
+      RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
+  );
+  return { documents, articles, versions, subparts, relations, rulings, citations } satisfies InsertReport;
+}
+
 export async function insertCorpus(db: KbDatabase, schema: string, input: unknown): Promise<StoreResult<InsertReport>> {
   const loaded = loadCorpus(input);
   if (!loaded.ok) {
     return { ok: false, error: { code: "INVALID_CORPUS", message: `Corpus نامعتبر است (${loaded.error.length} مسئله)؛ چیزی ذخیره نشد.`, issues: loaded.error } };
   }
   const flat = flattenCorpus(loaded.value);
-  const q = (t: Parameters<typeof tableRef>[1]) => tableRef(schema, t);
 
   try {
     const report = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`legal-kb-store:write:${schema}`}, 0))`);
       await assertCurrent(tx, schema);
 
-      const clashes = [
-        ...(await existingIds(tx, schema, "document", loaded.value.documents.map((d) => d.id))).map((id) => `document:${id}`),
-        ...(await existingIds(tx, schema, "ruling", loaded.value.rulings.map((g) => g.id))).map((id) => `ruling:${id}`),
-      ];
-      if (clashes.length > 0) {
-        throw new StoreAbort({
-          code: "ALREADY_EXISTS",
-          message: `درج فقط‌افزودنی است و رکورد زیر از قبل هست؛ چیزی ذخیره نشد: ${clashes.join("، ")}`,
-          conflicts: clashes,
-        });
-      }
-
-      const documents = await insertRows(
-        tx,
-        flat.documents,
-        (json) => sql`WITH ins AS (
-          INSERT INTO ${q("document")} (seq, id, kind, title, short_title, enacted_on, ${sql.raw(PROV_COLS)})
-          SELECT (SELECT coalesce(max(seq), 0) FROM ${q("document")}) + t.idx + 1, t.id, t.kind, t.title, t.short_title, t.enacted_on, ${sql.raw(PROV_SEL)}
-          FROM jsonb_to_recordset(${json}::jsonb) AS t(idx integer, id text, kind text, title text, short_title text, enacted_on date, ${sql.raw(PROV_REC)})
-          ORDER BY t.idx
-          RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
-      );
-      const articles = await insertRows(
-        tx,
-        flat.articles,
-        (json) => sql`WITH ins AS (
-          INSERT INTO ${q("article")} (document_id, label, article_number, article_repeat)
-          SELECT t.document_id, t.label, t.article_number, t.article_repeat
-          FROM jsonb_to_recordset(${json}::jsonb) AS t(document_id text, label text, article_number integer, article_repeat integer)
-          RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
-      );
-      const versions = await insertRows(
-        tx,
-        flat.versions,
-        (json) => sql`WITH ins AS (
-          INSERT INTO ${q("article_version")} (document_id, article_label, valid_from, valid_to, body, ${sql.raw(PROV_COLS)})
-          SELECT t.document_id, t.article_label, t.valid_from, t.valid_to, t.body, ${sql.raw(PROV_SEL)}
-          FROM jsonb_to_recordset(${json}::jsonb) AS t(document_id text, article_label text, valid_from date, valid_to date, body text, ${sql.raw(PROV_REC)})
-          RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
-      );
-      const subparts = await insertRows(
-        tx,
-        flat.subparts,
-        (json) => sql`WITH ins AS (
-          INSERT INTO ${q("article_subpart")} (document_id, article_label, valid_from, ordinal, kind, label, body)
-          SELECT t.document_id, t.article_label, t.valid_from, t.ordinal, t.kind, t.label, t.body
-          FROM jsonb_to_recordset(${json}::jsonb) AS t(document_id text, article_label text, valid_from date, ordinal integer, kind text, label text, body text)
-          RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
-      );
-      const relations = await insertRows(
-        tx,
-        flat.relations,
-        (json) => sql`WITH ins AS (
-          INSERT INTO ${q("relation")} (seq, type, from_document_id, from_article, to_document_id, to_article, effective_from, note, ${sql.raw(PROV_COLS)})
-          SELECT (SELECT coalesce(max(seq), 0) FROM ${q("relation")}) + t.idx + 1, t.type, t.from_document_id, t.from_article, t.to_document_id, t.to_article,
-                 t.effective_from, t.note, ${sql.raw(PROV_SEL)}
-          FROM jsonb_to_recordset(${json}::jsonb) AS t(idx integer, type text, from_document_id text, from_article text, to_document_id text, to_article text,
-                                                       effective_from date, note text, ${sql.raw(PROV_REC)})
-          ORDER BY t.idx
-          RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
-      );
-      const rulings = await insertRows(
-        tx,
-        flat.rulings,
-        (json) => sql`WITH ins AS (
-          INSERT INTO ${q("ruling")} (seq, id, kind, number, issuer, issued_on, title, body, ${sql.raw(PROV_COLS)})
-          SELECT (SELECT coalesce(max(seq), 0) FROM ${q("ruling")}) + t.idx + 1, t.id, t.kind, t.number, t.issuer, t.issued_on, t.title, t.body, ${sql.raw(PROV_SEL)}
-          FROM jsonb_to_recordset(${json}::jsonb) AS t(idx integer, id text, kind text, number text, issuer text, issued_on date, title text, body text, ${sql.raw(PROV_REC)})
-          ORDER BY t.idx
-          RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
-      );
-      const citations = await insertRows(
-        tx,
-        flat.cites,
-        (json) => sql`WITH ins AS (
-          INSERT INTO ${q("ruling_cite")} (ruling_id, ordinal, document_id, article_label)
-          SELECT t.ruling_id, t.ordinal, t.document_id, t.article_label
-          FROM jsonb_to_recordset(${json}::jsonb) AS t(ruling_id text, ordinal integer, document_id text, article_label text)
-          RETURNING 1) SELECT count(*)::integer AS n FROM ins`,
-      );
-      return { documents, articles, versions, subparts, relations, rulings, citations } satisfies InsertReport;
+      await assertNoClashes(tx, schema, loaded.value);
+      return insertFlat(tx, schema, flat);
     });
     return { ok: true, value: report };
   } catch (e) {

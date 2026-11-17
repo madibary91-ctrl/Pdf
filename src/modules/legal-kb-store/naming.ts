@@ -23,7 +23,26 @@ export function parseSchemaName(value: unknown): StoreResult<string> {
       },
     };
   }
+  if (value.endsWith(AUDIT_SUFFIX)) {
+    return {
+      ok: false,
+      error: { code: "INVALID_INPUT", message: `نام شِما نمی‌تواند به «${AUDIT_SUFFIX}» ختم شود؛ این پسوند برای شِمای ممیزی (<نام>${AUDIT_SUFFIX}) رزرو است.` },
+    };
+  }
   return { ok: true, value };
+}
+
+/** پسوند شِمای ممیزی. شِمای ممیزی جدا است تا فهرست جدول‌های شِمای دانش ثابت بماند و بشود دسترسی‌ها را جدا داد (ADR-0005). */
+export const AUDIT_SUFFIX = "_audit";
+
+/** نام شِمای ممیزیِ یک store؛ `schema` باید پیشتر با `parseSchemaName` تأیید شده باشد (≤ ۴۰ نویسه ⇒ ≤ ۴۶، زیر سقف ۶۳ پستگرس). */
+export function auditSchemaName(schema: string): string {
+  return `${schema}${AUDIT_SUFFIX}`;
+}
+
+/** `"<schema>_audit"."version_audit"` — با نقل‌قول امن. */
+export function auditRef(schema: string): SQL {
+  return sql`${sql.identifier(auditSchemaName(schema))}.${sql.identifier("version_audit")}`;
 }
 
 export const TABLES = ["document", "article", "article_version", "article_subpart", "relation", "ruling", "ruling_cite", "migration_ledger"] as const;

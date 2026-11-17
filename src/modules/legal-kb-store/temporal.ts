@@ -27,7 +27,7 @@ const REPEATABLE_READ_ONLY = { isolationLevel: "repeatable read", accessMode: "r
 
 const invalid = (message: string): StoreAbort => new StoreAbort({ code: "INVALID_INPUT", message });
 
-async function subpartsOf(ex: KbExecutor, schema: string, documentId: string, label: string, validFrom: IsoDate): Promise<Subpart[]> {
+export async function subpartsOf(ex: KbExecutor, schema: string, documentId: string, label: string, validFrom: IsoDate): Promise<Subpart[]> {
   const rows = (
     await ex.execute(
       sql`SELECT kind, label, body FROM ${tableRef(schema, "article_subpart")}

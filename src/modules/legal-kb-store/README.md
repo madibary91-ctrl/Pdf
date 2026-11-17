@@ -6,7 +6,8 @@
 
 > ⚠️ این ماژول **هیچ قانون واقعی ندارد** و چیزی را خودکار در پایگاه برنامه نمی‌نویسد. هیچ مسیر/صفحه‌ای هم‌اکنون آن را صدا نمی‌زند؛
 > مهاجرت و درج فقط وقتی اتفاق می‌افتد که کدی صراحتاً `migrate()` / `insertCorpus()` را فراخوانی کند.
-> این **بخش ۴ب‑۱** است؛ جست‌وجوی کلمه‌ای (۴ب‑۲) و ارجاع به اسناد موجود در پایگاه هنوز نیست. طراحی: `docs/adr/0004-legal-kb-store.md`.
+> **بخش ۴ب‑۱** (ذخیره و خواندن): `docs/adr/0004-legal-kb-store.md`. **بخش ۴ب‑۲** (مسیر اعتماد، ممیزی، درج افزایشی): `docs/adr/0005-legal-kb-trust-and-incremental.md`.
+> جست‌وجوی کلمه‌ای هنوز نیست (۴ب‑۳). ⚠️ `markVerified`/`correctVersion` هویت را نمی‌سنجند؛ فقط پشت لایهٔ احراز هویت و نقش صدا زده شوند.
 
 ## رابط عمومی
 
@@ -21,11 +22,21 @@ await store.readCorpus();             // کل پایگاه = Corpus متعارف
 await store.resolveCitation(ref, "2016-07-15");  // همان معنای legal-kb-schema، اما از پایگاه
 await store.versionsInForceAt("2016-07-15");
 await store.stats(); await store.migrationStatus();
+
+// ── ۴ب‑۲ ──
+await store.insertIncremental(unknown); // مثل insertCorpus ولی رابطه/رأی می‌تواند به اسناد و مواد موجود در پایگاه ارجاع دهد
+const ref = { documentId: "sample-law", article: "2", validFrom: "2001-01-01" };
+// متنی که حقوقدان دیده → هش آن؛ تأیید فقط روی همان متن می‌نشیند (وگرنه CONFLICT)
+const expectedHash = versionContentHash(versionTheLawyerSaw);
+await store.markVerified(ref, { expectedHash, reviewedBy: "…", reviewedOn: "2025-03-01" });
+await store.revokeVerification(ref, { expectedHash, revokedBy: "…", revokedOn: "…", reason: "…" });
+await store.correctVersion(ref, { expectedHash, text, subparts, correctedBy: "…", correctedOn: "…", reason: "…" }); // تأیید پاک می‌شود
+await store.listAudit(ref /* یا null */, { limit: 100 });   // فقط‌افزودنی؛ قبل/بعد هر تغییر
 ```
 
 همهٔ توابع `Promise<StoreResult<T>>` برمی‌گردانند و **هرگز پرتاب نمی‌کنند**. کد خطا (`StoreErrorCode`):
 `INVALID_INPUT` · `INVALID_CORPUS` (با `issues`) · `ALREADY_EXISTS` (با `conflicts`) · `NOT_MIGRATED` · `MIGRATION_TAMPERED` ·
-`MIGRATION_UNKNOWN` · `CONSTRAINT_VIOLATION` · `CORRUPT_DATA` · `DB_ERROR`. پیام خطا هرگز متن رکورد، SQL یا رشتهٔ اتصال نمی‌آورد.
+`MIGRATION_UNKNOWN` · `CONSTRAINT_VIOLATION` · `CORRUPT_DATA` · `DB_ERROR` · `NOT_FOUND` · `CONFLICT` (هش کهنه یا وضعیت نادرست برای کنش). پیام خطا هرگز متن رکورد، SQL یا رشتهٔ اتصال نمی‌آورد.
 
 ## استفاده در برنامه (نمونه؛ هنوز هیچ مسیری این را صدا نمی‌زند)
 
@@ -53,6 +64,14 @@ if (made.ok) { const m = await made.value.migrate(); /* Result؛ خطا را گ�
 **خواندن:** تراکنش `REPEATABLE READ` فقط‌خواندنی (تصویر یکدست)؛ `readCorpus` دوباره از `loadCorpus` می‌گذرد (دادهٔ خراب = `CORRUPT_DATA`، نه خروجی نادرست).
 **سپر نسخهٔ شِما:** هر عملیات ابتدا دفتر مهاجرت را با کد می‌سنجد؛ ناهمخوان/معلق = خطا، نه اجرای بی‌صدا روی شمای قدیمی.
 
+## مسیر اعتماد و ممیزی (۴ب‑۲)
+- **هر تغییر یک رکورد ممیزی فقط‌افزودنی دارد، در همان تراکنش** (`<schema>_audit.version_audit`، تریگر ضد UPDATE/DELETE/TRUNCATE، بدون FK). ممیزی از ردیف مرجع بیشتر عمر می‌کند.
+- **compare-and-set با `versionContentHash`:** کنشگر هشِ متنِ دیده‌شده را می‌دهد؛ ناهمخوان ⇒ `CONFLICT`؛ قفل ردیف (`FOR UPDATE`).
+- **تأیید:** فقط `pending → verified`؛ تأییدِ دوباره `CONFLICT`. **پس‌گرفتن:** فقط `verified → pending` با دلیل. **اصلاح:** متن/تبصره‌ها عوض می‌شود، **تأیید پاک می‌شود**، متن پیشین در ممیزی می‌ماند؛ بازه و منبع هرگز عوض نمی‌شود؛ اصلاح بی‌تغییر رد می‌شود.
+- ورودی‌ها از قواعد `loadCorpus` می‌گذرند و **شکل متعارف** نوشته می‌شود (مثلاً CRLF ⇒ LF).
+- **درج افزایشی:** از پایگاه فقط «اسکلت» سندهای ارجاع‌شده خوانده می‌شود و با ورودی یک‌جا اعتبارسنجی می‌شود (مسیر مسائل به ایندکس ورودی)؛ فقط بخش نو درج می‌شود؛ سقف ۲۰۰ سند بیرونی.
+- محدودیت‌ها: `actor` خوداظهار است؛ تأیید فقط روی نسخهٔ ماده؛ تناقض فقط میان سندهای درگیرِ اسکلت سنجیده می‌شود.
+
 ## مهاجرت‌ها (`migrations.ts`) — 🔴
 
 - **هرگز مهاجرتِ اعمال‌شده را ویرایش نکنید.** تغییر = مهاجرت تازه (`0002_…`) به انتهای `MIGRATIONS`. checksum در `unit.test.ts` قفل است و دفتر هر پایگاه هم checksum را نگه می‌دارد.
@@ -65,7 +84,11 @@ if (made.ok) { const m = await made.value.migrate(); /* Result؛ خطا را گ�
 - `migrate.test.ts`، `constraints.test.ts`، `store.test.ts`، `temporal.test.ts` — **پایگاه واقعی**؛ هر فایل شِمای یک‌بارمصرف `legal_kb_test_<تصادفی>` می‌سازد و پاک می‌کند (به `public` و شِمای واقعی دست نمی‌زند).
   نشانی: `KB_TEST_DATABASE_URL` یا `DATABASE_URL` (یا `.env`). بدون آن، تست‌های پایگاه **رد می‌شوند**؛ در `CI=true` نبودنِ پایگاه خودش تست قرمز است.
 - تفاضلی: بیش از ۴۰۰۰ بررسی `resolveCitation` (با assertion) روی ۴۱ Corpus (نمونه + ۴۰ بذر تصادفی) × روزهای مرزی، و ۲۵۰ روز `versionsInForceAt`، در برابر موتور خالص — همه‌ی وضعیت‌ها دیده می‌شوند.
-- آزمون جهشی: `python3 tooling/mutation/legal-kb-store.py` (نیاز به پایگاه؛ نتیجه در یادداشت ۰۰۰۶).
+- ۴ب‑۲: `trust.unit.test.ts` (بدون پایگاه: هش محتوا با مقدار طلایی، اعتبارسنجی ورودی، اسکلت زمینه، قفل checksum ۰۰۰۲)،
+  `trust.test.ts` (تأیید/پس‌گرفتن/اصلاح، ممیزی فقط‌افزودنی، مسابقه‌ها، قفل ردیفِ قطعی، ارتقا از ۰۰۰۱)،
+  `incremental.test.ts` (**تفاضلی:** «A سپس افزایشیِ B ≡ درج یک‌جای A∪B» روی نمونه و ۲۵ بذر تصادفی؛ اعتبارسنجی ترکیبی؛ اتمی و هم‌زمانی).
+  هر تست store خودش را همان‌جا می‌بندد (`afterEach`) چون شمار اتصال پستگرس محدود است.
+- آزمون جهشی: `python3 tooling/mutation/legal-kb-store.py [از تا]` (نیاز به پایگاه؛ نتیجه در یادداشت‌های ۰۰۰۶ و ۰۰۰۷). تست‌های «ویرایش‌ناپذیر» (قفل checksum) عمداً کنار گذاشته می‌شوند.
 
 ## وقتی چیزی را تغییر می‌دهید
 - ستون/قید/جدول تازه: مهاجرت جدید + تست قید در `constraints.test.ts` + (اگر معنا دارد) جهش در اسکریپت جهشی + بازبینی مالک معماری.
