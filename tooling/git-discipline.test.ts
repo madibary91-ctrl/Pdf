@@ -319,17 +319,22 @@ describe("تجزیهٔ خروجی git", () => {
 // ───────── یکپارچگی روی مخزن موقت: خودِ CLI و خودِ هوک ─────────
 
 const NODE_FLAGS = ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON"];
+/**
+ * محیط فرایندهای فرزند بدون `GIT_*`: وقتی این تست‌ها از داخل هوک `pre-commit` (دروازه) اجرا می‌شوند، git متغیرهایی مثل
+ * `GIT_INDEX_FILE`/`GIT_DIR` را به ارث می‌دهد و `git` داخل مخزن موقت به ایندکس مخزن اصلی اشاره می‌کرد.
+ */
+const cleanEnv = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))) as NodeJS.ProcessEnv;
 const TOOL = join(ROOT, "tooling/git-discipline.ts");
 const HOOKS = join(ROOT, "tooling/git-hooks");
 
 describe("هوک‌ها در مخزن گیتِ موقت", () => {
   let dir = "";
   const git = (...args: string[]) => {
-    const r = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: cleanEnv() });
     return { code: r.status ?? -1, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
   };
   const cli = (args: string[], input?: string) => {
-    const r = spawnSync(process.execPath, [...NODE_FLAGS, TOOL, ...args], { cwd: dir, encoding: "utf8", ...(input === undefined ? {} : { input }) });
+    const r = spawnSync(process.execPath, [...NODE_FLAGS, TOOL, ...args], { cwd: dir, encoding: "utf8", env: cleanEnv(), ...(input === undefined ? {} : { input }) });
     return { code: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
   };
   const write = (rel: string, text: string) => {
