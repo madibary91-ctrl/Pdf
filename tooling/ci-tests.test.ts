@@ -1,6 +1,8 @@
 /** آزمون «دروازهٔ صفر-رد»: خودِ بررسی‌گر باید رد‌شدن، شکست و گزارش خراب را بگیرد (آزمون نگهبان). */
 import { describe, expect, it } from "vitest";
 import { evaluateReport, MIN_PASSED_TESTS } from "./ci-tests";
+import { fileURLToPath } from "node:url";
+import { readFloorHistory, requiredFloor } from "./gate-floor";
 
 type A = { status: string; fullName?: string };
 const file = (name: string, assertions: A[], status = "passed") => ({
@@ -90,7 +92,7 @@ describe("tooling: دروازهٔ صفر-رد (evaluateReport)", () => {
     }
   });
 
-  it("کف مقرر با وضعیت تحویل ۴ب‑۳ هم‌خوان است (۷۳۵)", () => {
-    expect(MIN_PASSED_TESTS).toBe(735);
+  it("کف مقرر هرگز از آخرین مقدار تأییدشده (تاریخچهٔ گیت) کمتر نیست؛ عدد سنجاق‌شده ندارد (ADR-0012)", () => {
+    expect(MIN_PASSED_TESTS).toBeGreaterThanOrEqual(requiredFloor(readFloorHistory(fileURLToPath(new URL("..", import.meta.url))) ?? []));
   });
 });
