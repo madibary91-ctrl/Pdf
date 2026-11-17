@@ -38,8 +38,14 @@ export type CitationChecker = Readonly<{ open(): CitationSession | Promise<Citat
 
 export type RejectedCitationPolicy = "redact" | "withhold";
 
-/** **بی‌پیش‌فرض**: هر دو الزامی‌اند. توصیه برای رو به کاربر: `withhold` + `requireQuotes: true`. */
-export type AnswerPolicy = Readonly<{ onRejectedCitation: RejectedCitationPolicy; requireQuotes: boolean }>;
+/**
+ * ترمیم کنترل‌شده (ADR-0017). **اختیاری و صریح**: نبودنش = بی‌تلاش دوم (رفتار برش ۱). هیچ مقدار پیش‌فرضی ندارد.
+ * `maxFirstAttemptSpendMicros`: سقفِ هزینهٔ **تا پیش از تلاش دوم** (واحد خرد؛ نه سقف کل). نامعلوم یا ارز دیگر ⇒ ترمیم نمی‌شود.
+ */
+export type RepairPolicy = Readonly<{ maxFirstAttemptSpendMicros: number; currency: string }>;
+
+/** **بی‌پیش‌فرض**: `onRejectedCitation` و `requireQuotes` الزامی‌اند. توصیه برای رو به کاربر: `withhold` + `requireQuotes: true`. `repair` اختیاری است. */
+export type AnswerPolicy = Readonly<{ onRejectedCitation: RejectedCitationPolicy; requireQuotes: boolean; repair?: RepairPolicy }>;
 
 export type OrchestratorConfig = Readonly<{
   searcher: Searcher;
@@ -143,7 +149,9 @@ export type OrchestratorWarning =
   | "CITATION_REJECTED"
   | "TEXT_MENTION_REJECTED"
   | "UNMARKED_CITATION"
-  | "UNSUPPORTED_NUMBERS";
+  | "UNSUPPORTED_NUMBERS"
+  | "REPAIRED"
+  | "REPAIR_FAILED";
 
 export type AnswerStatus = "answered" | "answered-redacted" | "no-sources" | "model-abstained" | "withheld";
 export type WithheldReason = "no-valid-citation" | "citation-rejected";
@@ -206,7 +214,30 @@ export type Answer = Readonly<{
   warnings: readonly OrchestratorWarning[];
   asOf: string;
   promptVersion: string;
+  /** فقط با `policy.repair`؛ بدون آن این کلید وجود ندارد (برش ۱ بی‌تغییر). */
+  repair?: RepairSummary;
 }>;
+
+/** چرا تلاش دوم لازم دیده شد (ADR-0017 §۳). */
+export type RepairTrigger = "citation-rejected" | "no-valid-citation" | "output-invalid";
+
+/**
+ * سرانجام ترمیم. `adopted`: نتیجهٔ تلاش دوم نمایش داده می‌شود · `not-improved`: انجام شد ولی اکیداً بهتر نبود · `failed`: تلاش دوم شکست خورد.
+ * `skipped-*`: شرط پول یا لغو اجازه نداد؛ `not-needed`: چیزی برای ترمیم نبود (یا امتناع مدل، که هرگز ترمیم نمی‌شود)؛
+ * `not-repairable`: علتِ ردّ از پایگاه است و بازنویسیِ مدل آن را درست نمی‌کند.
+ */
+export type RepairOutcome =
+  | "not-needed"
+  | "not-repairable"
+  | "skipped-cost-cap"
+  | "skipped-cost-unknown"
+  | "skipped-aborted"
+  | "adopted"
+  | "not-improved"
+  | "failed";
+
+/** فقط وقتی `policy.repair` پیکربندی شده در `Answer` می‌آید. `attempts` = شمار فراخوانی‌های تولیدِ ارکستراتور (۰: مدل فراخوانی نشد). */
+export type RepairSummary = Readonly<{ outcome: RepairOutcome; trigger: RepairTrigger | null; attempts: 0 | 1 | 2; promptVersion: string | null }>;
 
 export type AskResult = OrchResult<Answer>;
 

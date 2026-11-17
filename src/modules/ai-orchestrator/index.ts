@@ -5,6 +5,9 @@ export type { CorpusIndexSource } from "./checker";
 export { resolveConfig } from "./config";
 export { parseAskRequest, isCalendarDate, REQUEST_LIMITS } from "./request";
 export { buildPrompt, neutralizeFences, PROMPT_VERSION, SYSTEM_PROMPT } from "./prompt";
+export { buildRepairPrompt, hasRepairableRejection, neutralizeFeedbackFence, repairFeedback, REPAIR_FEEDBACK_MAX_CHARS, REPAIR_PROMPT_VERSION } from "./prompt";
+export { mergeAccounting, spendGate } from "./accounting";
+export type { SpendGate } from "./accounting";
 export { parseModelOutput, OUTPUT_LIMITS } from "./model-output";
 export type { ModelCitationEntry, ParsedModelOutput, ParseOutcome } from "./model-output";
 export { scanMarkers, rewriteMarkers, idsOf, REDACTION_MARK } from "./markers";
@@ -36,6 +39,10 @@ export type {
   Rejection,
   RejectionKind,
   RejectedCitationPolicy,
+  RepairOutcome,
+  RepairPolicy,
+  RepairSummary,
+  RepairTrigger,
   RetrievalOptions,
   RetrievalSummary,
   SourceClaim,
