@@ -13,7 +13,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { describe } from "vitest";
-import { auditSchemaName } from "./naming";
+import { auditSchemaName, searchSchemaName } from "./naming";
 import { createKbStore, type KbStore } from "./store";
 
 config({ quiet: true });
@@ -56,6 +56,7 @@ export async function openTestKb(options: Readonly<{ migrate?: boolean }> = {}):
       if (!schema.startsWith("legal_kb_test_")) throw new Error("امتناع از حذف شِمایی که آزمونی نیست.");
       await db.execute(sql`DROP SCHEMA IF EXISTS ${sql.identifier(schema)} CASCADE`);
       await db.execute(sql`DROP SCHEMA IF EXISTS ${sql.identifier(auditSchemaName(schema))} CASCADE`);
+      await db.execute(sql`DROP SCHEMA IF EXISTS ${sql.identifier(searchSchemaName(schema))} CASCADE`);
       await pool.end();
     },
   };

@@ -61,7 +61,7 @@ export const MODULES: readonly ModuleInfo[] = [
   m("ui-rtl", 1, 3, "طراحی سیستم RTL", "کامپوننت‌های راست‌به‌چپ، اعداد و تقویم جلالی در رابط", ["shared-types"], false, false),
   m("legal-kb-schema", 2, 4, "شمای پایگاه دانش", "مدل داده قانون، ماده، نسخه، رابطه و رأی", ["shared-types"], true, true),
   m("legal-kb-ingest", 2, 4, "دریافت قانون", "دریافت، پاک‌سازی، شکستن به ماده و بارگذاری (Python)", ["persian-text", "legal-kb-schema"], false, true),
-  m("legal-kb-store", 2, 4, "ذخیره و جست‌وجو", "ذخیره، جست‌وجوی کلمه‌ای و برداری، نسخه‌بندی زمانی", ["legal-kb-schema"], false, false),
+  m("legal-kb-store", 2, 4, "ذخیره و جست‌وجو", "ذخیره، جست‌وجوی کلمه‌ای و برداری، نسخه‌بندی زمانی", ["legal-kb-schema", "persian-text"], false, false),
   m("eval-set", 2, 5, "مجموعهٔ ارزیابی", "مجموعهٔ ارزیابی حقوقی و ابزار اجرای آن", ["shared-types"], false, true),
   m("ledger", 3, 8, "دفتر اعتبار", "خرید، رزرو، مصرف و بازگشت اعتبار پیام", ["shared-types"], false, true),
   m("identity", 3, 8, "هویت", "ثبت‌نام، ورود با پیامک، نشست‌ها، نقش‌ها و جداسازی مستأجر", ["shared-types"], false, true),

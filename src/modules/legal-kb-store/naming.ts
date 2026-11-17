@@ -29,7 +29,26 @@ export function parseSchemaName(value: unknown): StoreResult<string> {
       error: { code: "INVALID_INPUT", message: `نام شِما نمی‌تواند به «${AUDIT_SUFFIX}» ختم شود؛ این پسوند برای شِمای ممیزی (<نام>${AUDIT_SUFFIX}) رزرو است.` },
     };
   }
+  if (value.endsWith(SEARCH_SUFFIX)) {
+    return {
+      ok: false,
+      error: { code: "INVALID_INPUT", message: `نام شِما نمی‌تواند به «${SEARCH_SUFFIX}» ختم شود؛ این پسوند برای شِمای نمایهٔ جست‌وجو (<نام>${SEARCH_SUFFIX}) رزرو است.` },
+    };
+  }
   return { ok: true, value };
+}
+
+/** پسوند شِمای نمایهٔ جست‌وجو (بخش ۴ب‑۳، ADR-0009). نمایه مشتق و بازسازی‌پذیر است و در شِمای خودش می‌ماند. */
+export const SEARCH_SUFFIX = "_search";
+
+/** نام شِمای نمایهٔ جست‌وجو؛ `schema` باید پیشتر با `parseSchemaName` تأیید شده باشد (≤ ۴۰ نویسه ⇒ ≤ ۴۷، زیر سقف ۶۳ پستگرس). */
+export function searchSchemaName(schema: string): string {
+  return `${schema}${SEARCH_SUFFIX}`;
+}
+
+/** `"<schema>_search"."<table>"` — با نقل‌قول امن. */
+export function searchTableRef(schema: string, table: "article_search" | "search_ledger"): SQL {
+  return sql`${sql.identifier(searchSchemaName(schema))}.${sql.identifier(table)}`;
 }
 
 /** پسوند شِمای ممیزی. شِمای ممیزی جدا است تا فهرست جدول‌های شِمای دانش ثابت بماند و بشود دسترسی‌ها را جدا داد (ADR-0005). */

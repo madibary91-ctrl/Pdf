@@ -5,6 +5,9 @@ import { insertCorpus } from "./insert";
 import { migrate, migrationStatus } from "./migrate";
 import { DEFAULT_SCHEMA, parseSchemaName } from "./naming";
 import { readCorpus, readStats } from "./read";
+import { migrateSearch, searchMigrationStatus } from "./search-migrate";
+import { reindexSearch, searchArticles, searchStatus } from "./search";
+import type { ReindexReport, SearchResult, SearchStatus } from "./search-types";
 import { resolveCitation, versionsInForceAt } from "./temporal";
 import { correctVersion, listAudit, markVerified, revokeVerification } from "./trust";
 import type {
@@ -53,6 +56,21 @@ export type KbStore = Readonly<{
   /** همان معنای `versionsInForceAt` در legal-kb-schema، اما از پایگاه. */
   versionsInForceAt(onDate: IsoDate): Promise<StoreResult<readonly InForceEntry[]>>;
   stats(): Promise<StoreResult<StoreStats>>;
+
+  // ───────── بخش ۴ب‑۳: جست‌وجوی کلمه‌ای (ADR-0009) — نمایهٔ مشتق در شِمای جدا `<schema>_search` ─────────
+  /** شِمای `<schema>_search` و جدول نمایه را می‌سازد (ایدمپوتنت، اتمی، دفتر مستقل). `migrate()` آن را نمی‌سازد. */
+  migrateSearch(): Promise<StoreResult<MigrationReport>>;
+  /** فقط‌خواندنی: مهاجرت‌های اعمال‌شده/معلق نمایه. */
+  searchMigrationStatus(): Promise<StoreResult<MigrationStatus>>;
+  /** نمایه را از جدول‌های اصلی می‌سازد/به‌روز می‌کند (افزایشی، ایدمپوتنت): جدید، بازسازی‌شده، بدون‌تغییر، یتیم‌های پاک‌شده. */
+  reindexSearch(): Promise<StoreResult<ReindexReport>>;
+  /** سلامت نمایه: نسخه‌های بی‌نمایه، کهنه و یتیم (فقط‌خواندنی). */
+  searchStatus(): Promise<StoreResult<SearchStatus>>;
+  /**
+   * جست‌وجوی کلمه‌ایِ زمان‌دار: همهٔ واژه‌ها باید در متن (و تبصره/بندها) باشند؛ فقط نسخهٔ معتبر در `asOf`؛ پیش‌فرض فقط تأییدشده.
+   * ورودی `unknown` است و روی مرز اعتبارسنجی می‌شود. متن نتیجه همیشه از جدول اصلی است.
+   */
+  searchArticles(input: unknown): Promise<StoreResult<SearchResult>>;
 }>;
 
 export function createKbStore(db: KbDatabase, options: StoreOptions = {}): StoreResult<KbStore> {
@@ -75,6 +93,11 @@ export function createKbStore(db: KbDatabase, options: StoreOptions = {}): Store
       resolveCitation: (ref: CitationRef, onDate: IsoDate) => resolveCitation(db, schema, ref, onDate),
       versionsInForceAt: (onDate: IsoDate) => versionsInForceAt(db, schema, onDate),
       stats: () => readStats(db, schema),
+      migrateSearch: () => migrateSearch(db, schema),
+      searchMigrationStatus: () => searchMigrationStatus(db, schema),
+      reindexSearch: () => reindexSearch(db, schema),
+      searchStatus: () => searchStatus(db, schema),
+      searchArticles: (input: unknown) => searchArticles(db, schema, input),
     }),
   };
 }
