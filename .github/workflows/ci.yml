@@ -46,6 +46,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # تاریخچهٔ کامل: گام «check-range» باید کامیتِ پایهٔ بازه را در کلون داشته باشد (G15).
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -57,6 +60,18 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      # قالب پیام کامیت‌های همین پوش/PR (G5, G15). هوک‌های محلی دورزدنی‌اند (--no-verify)؛ این گام نه.
+      # منطق انتخاب بازه (PR/پوش/ref تازه) خالص و آزموده است: tooling/git-discipline.ts ← planCiRange. بدون وابستگی؛ فقط Node.
+      - name: Commit messages (check-range)
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_PUSH_BEFORE: ${{ github.event.before }}
+          CI_SHA: ${{ github.sha }}
+          CI_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tooling/git-discipline.ts ci-range
 
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile

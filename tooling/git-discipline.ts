@@ -6,7 +6,7 @@
  *   ۲. لایهٔ نازک اجرا (`git`، فایل) که فقط داده را جمع می‌کند و به توابع خالص می‌دهد.
  *   ۳. دستورهای خط فرمان که هوک‌های `tooling/git-hooks/*` صدا می‌زنند.
  *
- * اجرا: node tooling/git-discipline.ts <install|doctor|commit-msg|pre-commit|pre-push|check-range|check-tag>
+ * اجرا: node tooling/git-discipline.ts <install|doctor|commit-msg|pre-commit|pre-push|check-range|ci-range|check-tag>
  *   (Node ≥ 22.18؛ مثل `ci-tests.ts` بدون وابستگی تازه.)
  *
  * صادقانه: هوک‌های محلی را می‌شود با `--no-verify` دور زد؛ دروازهٔ نهایی همچنان CI و Branch protection است.
@@ -389,6 +389,52 @@ export function decideGateOutcome(run: GateRun, strict: boolean): GateOutcome {
   return { kind: "block", message: `✖ «دروازهٔ صفر-رد پیش از پوش» قرمز است (${how}); پوش رد شد.` };
 }
 
+// ───────────────────────── بازهٔ کامیت‌ها در CI (check-range) ─────────────────────────
+
+export type CiRangeEnv = Readonly<{
+  eventName: string;
+  /** فقط `pull_request`: نوک شاخهٔ مقصد و نوک شاخهٔ PR (نه کامیتِ ادغامِ مجازیِ checkout). */
+  prBaseSha: string;
+  prHeadSha: string;
+  /** فقط `push`: نوک پیشین ref (برای ref تازه صفر است). */
+  pushBefore: string;
+  sha: string;
+  defaultBranch: string;
+}>;
+export type CiRangeGit = Readonly<{
+  commitExists(sha: string): boolean;
+  /** نیای مشترک `sha` و نوک شاخهٔ پیش‌فرض؛ `null` اگر نبود. */
+  mergeBaseWithDefault(sha: string, defaultBranch: string): string | null;
+}>;
+export type CiRangePlan = Readonly<{ ok: true; range: string; note: string } | { ok: false; message: string }>;
+
+const FULL_SHA = /^[0-9a-f]{40}$/i;
+
+/**
+ * کدام بازه در CI سنجیده شود؟ (خالص؛ git از بیرون می‌آید)
+ *  - `pull_request`: `base..headِ PR` — با نوک PR، نه کامیت ادغامِ مجازیِ «Merge X into Y» که قالب ندارد؛
+ *  - `push` با `before` شناخته‌شده: `before..sha`؛
+ *  - ref تازه (تگ/شاخه)، `before` ناموجود (force-push) یا اجرای دستی: از نیای مشترک با شاخهٔ پیش‌فرض تا `sha`
+ *    (پوش تگ روی کامیتی که روی main هست = بازهٔ تهی)، و اگر نیای مشترکی نبود فقط خودِ کامیت (`sha^!`).
+ * شکست بلند و روشن به‌جای «سبزِ بی‌بررسی»: کامیتِ پایهٔ PR در کلون نباشد (نبودنِ `fetch-depth: 0`) = خطا.
+ */
+export function planCiRange(env: CiRangeEnv, git: CiRangeGit): CiRangePlan {
+  if (!FULL_SHA.test(env.sha)) return { ok: false, message: "SHA کامیت (CI_SHA/GITHUB_SHA) نامعتبر یا خالی است." };
+  if (env.eventName === "pull_request") {
+    if (!FULL_SHA.test(env.prBaseSha) || !FULL_SHA.test(env.prHeadSha)) return { ok: false, message: "SHAهای پایه/سرِ PR در رویداد pull_request نیامده است." };
+    if (!git.commitExists(env.prBaseSha) || !git.commitExists(env.prHeadSha)) {
+      return { ok: false, message: "کامیت پایهٔ PR در کلون نیست؛ checkout باید با «fetch-depth: 0» باشد (وگرنه بازه سنجیده نمی‌شود)." };
+    }
+    return { ok: true, range: `${env.prBaseSha}..${env.prHeadSha}`, note: "کامیت‌های PR" };
+  }
+  if (env.eventName === "push" && FULL_SHA.test(env.pushBefore) && !ZERO.test(env.pushBefore) && git.commitExists(env.pushBefore)) {
+    return { ok: true, range: `${env.pushBefore}..${env.sha}`, note: "کامیت‌های تازهٔ این پوش" };
+  }
+  const base = env.defaultBranch === "" ? null : git.mergeBaseWithDefault(env.sha, env.defaultBranch);
+  if (base !== null && FULL_SHA.test(base)) return { ok: true, range: `${base}..${env.sha}`, note: `ref تازه/اجرای دستی: نسبت به شاخهٔ ${env.defaultBranch}` };
+  return { ok: true, range: `${env.sha}^!`, note: "پایهٔ مقایسه پیدا نشد؛ فقط خودِ کامیت" };
+}
+
 // ───────────────────────── تجزیهٔ خروجی git (خالص) ─────────────────────────
 
 /** خروجی `git diff --name-status -z` */
@@ -541,6 +587,32 @@ function cmdCheckRange(range: string | undefined): void {
   process.stdout.write("✔ پیام همهٔ کامیت‌های بازه با قالب می‌خواند.\n");
 }
 
+function cmdCiRange(): void {
+  const e = process.env;
+  const env: CiRangeEnv = {
+    eventName: e["CI_EVENT_NAME"] ?? "",
+    prBaseSha: e["CI_PR_BASE_SHA"] ?? "",
+    prHeadSha: e["CI_PR_HEAD_SHA"] ?? "",
+    pushBefore: e["CI_PUSH_BEFORE"] ?? "",
+    sha: e["CI_SHA"] ?? "",
+    defaultBranch: e["CI_DEFAULT_BRANCH"] ?? "",
+  };
+  const plan = planCiRange(env, {
+    commitExists: (sha) => git(["cat-file", "-e", `${sha}^{commit}`]).ok,
+    mergeBaseWithDefault: (sha, branch) => {
+      for (const ref of [`refs/remotes/origin/${branch}`, `refs/heads/${branch}`]) {
+        if (!git(["rev-parse", "-q", "--verify", `${ref}^{commit}`]).ok) continue;
+        const mb = git(["merge-base", sha, ref]);
+        if (mb.ok && mb.out.trim() !== "") return mb.out.trim();
+      }
+      return null;
+    },
+  });
+  if (!plan.ok) fail(`✖ ${plan.message}`);
+  process.stdout.write(`▶ check-range ${plan.range} (${plan.note})\n`);
+  cmdCheckRange(plan.range);
+}
+
 function cmdInstall(): void {
   if (!git(["config", "core.hooksPath", "tooling/git-hooks"]).ok) fail("نصب هوک‌ها شکست خورد (داخل مخزن گیت نیستید؟).");
   process.stdout.write("✔ core.hooksPath = tooling/git-hooks (هوک‌های commit-msg، pre-commit، pre-push فعال شدند).\n");
@@ -559,6 +631,7 @@ function main(argv: readonly string[]): void {
     case "pre-commit": return cmdPreCommit();
     case "pre-push": return cmdPrePush();
     case "check-range": return cmdCheckRange(arg);
+    case "ci-range": return cmdCiRange();
     case "check-tag": {
       if (arg === undefined) fail("استفاده: check-tag <نام>");
       const bad = checkTagName(arg);
@@ -568,7 +641,7 @@ function main(argv: readonly string[]): void {
     }
     case "install": return cmdInstall();
     case "doctor": return cmdDoctor();
-    default: fail("دستورها: install | doctor | commit-msg <file> | pre-commit | pre-push | check-range <a..b> | check-tag <name>");
+    default: fail("دستورها: install | doctor | commit-msg <file> | pre-commit | pre-push | check-range <a..b> | ci-range | check-tag <name>");
   }
 }
 
