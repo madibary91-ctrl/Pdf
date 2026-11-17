@@ -1,4 +1,7 @@
-﻿node_modules/
+node_modules/
 .next/
 .env*
 *.log
+test-results/
+next-env.d.ts
+*.tsbuildinfo

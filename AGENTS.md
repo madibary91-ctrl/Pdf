@@ -16,6 +16,7 @@
 ## دستورها
 ```
 npx vitest run                 # همهٔ تست‌ها + بررسی مرزها (باید سبز باشد)
+node tooling/ci-tests.ts        # همان دروازهٔ CI: نیازمند پایگاه (KB_TEST_DATABASE_URL/DATABASE_URL)؛ هیچ تستی نباید رد شود
 npx tsc --noEmit               # تایپ
 npm run build                  # ساخت
 ```

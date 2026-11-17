@@ -1,0 +1,94 @@
+# CI: با هر push و pull request اجرا می‌شود.
+# سیاست: «سبزِ بی‌اجرا» پذیرفتنی نیست؛ تست‌های پایگاه‌داده باید روی یک PostgreSQL واقعی اجرا شوند و هیچ تستی رد (skip) نشود.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# اجرای تازه‌تر روی همان شاخه، اجرای کهنه را لغو می‌کند.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# کمترین دسترسی ممکن.
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  # پایگاه آزمون = سرویس PostgreSQL پایین. تست‌ها هر کدام شِمای یک‌بارمصرف می‌سازند و پاک می‌کنند؛ به public دست نمی‌زنند.
+  KB_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+
+jobs:
+  verify:
+    name: typecheck · lint · tests (real PostgreSQL) · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Lint
+        run: pnpm exec eslint .
+
+      # کنترل منفی: اجراگر بدون پایگاه باید قرمز شود؛ اگر سبز شد یعنی دروازه خراب است.
+      - name: Gate self-check (must fail without a database)
+        shell: bash
+        run: |
+          if env -u KB_TEST_DATABASE_URL -u DATABASE_URL node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tooling/ci-tests.ts; then
+            echo "::error::دروازهٔ تست بدون پایگاه سبز شد؛ این یعنی تست‌های پایگاه ممکن است بی‌صدا رد شوند."
+            exit 1
+          fi
+          echo "OK: gate correctly refuses to pass without a database."
+
+      # همهٔ تست‌ها (از جمله تست‌های پایگاه) + دروازهٔ صفر-رد. جزئیات: tooling/ci-tests.ts
+      - name: Tests (zero-skip gate, real PostgreSQL)
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tooling/ci-tests.ts
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-report
+          path: test-results/vitest-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Build
+        run: pnpm run build

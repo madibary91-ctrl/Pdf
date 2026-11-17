@@ -1,0 +1,222 @@
+/**
+ * «دروازهٔ صفر-رد» (zero-skip gate) برای CI — تنها دستور رسمی اجرای تست‌ها در محیط خودکار.
+ *
+ * چرا؟ تست‌های پایگاه‌داده وقتی پایگاه تنظیم نباشد بی‌صدا `skip` می‌شوند و Vitest باز هم «سبز» می‌دهد.
+ * برای نرم‌افزار حقوقی «سبزِ بی‌اجرا» پذیرفتنی نیست. این فایل سه کار می‌کند:
+ *   1. پیش از اجرا مطمئن می‌شود پایگاه آزمون تنظیم و در دسترس است (وگرنه با پیام روشن قرمز می‌شود)؛
+ *   2. Vitest را با `CI=true` و گزارش JSON اجرا می‌کند؛
+ *   3. گزارش را می‌خواند و اگر حتی یک تست رد شده/شکست‌خورده باشد یا شمار تست‌های سبز از کف مقرر کمتر باشد، قرمز می‌شود.
+ *
+ * اجرا (محلی و CI یکسان):  node tooling/ci-tests.ts
+ *   (Node ≥ 22.18؛ بدون وابستگی تازه: TypeScript با «حذف نوع» در خود Node اجرا می‌شود.)
+ *
+ * بخش خالصِ این فایل (`evaluateReport`) در `tooling/ci-tests.test.ts` آزموده می‌شود.
+ * `todo`ها (نمونه‌های مرجع منتظر حقوقدان، AGENTS.md قاعدهٔ ۷) رد‌شده حساب نمی‌شوند، ولی در خروجی گزارش می‌شوند.
+ */
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import dotenv from "dotenv";
+import pg from "pg";
+
+/**
+ * کفِ شمار تست‌های سبز (چنگک): اگر فایل تستی بی‌صدا از اجرا خارج شود (مثلاً با `exclude` در پیکربندی)،
+ * شمار سبزها می‌افتد و CI قرمز می‌شود. هنگام افزودن تست جدید می‌توان بالا برد؛ پایین آوردنش نیاز به بازبینی دارد.
+ * (۶۰۳ = وضعیت پایان بخش ۴ب‑۲ با پایگاه فعال.)
+ */
+export const MIN_PASSED_TESTS = 603;
+
+export type GateOptions = Readonly<{ minPassed: number }>;
+
+export type GateSummary = Readonly<{
+  files: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  todo: number;
+}>;
+
+export type GateResult = Readonly<{
+  ok: boolean;
+  problems: readonly string[];
+  summary: GateSummary;
+  skippedTests: readonly string[];
+  failedTests: readonly string[];
+  todoTests: readonly string[];
+}>;
+
+type Assertion = { status: string; fullName: string };
+type FileResult = { name: string; status: string; assertions: Assertion[] };
+
+const EMPTY: GateSummary = { files: 0, passed: 0, failed: 0, skipped: 0, todo: 0 };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function parseReport(report: unknown): FileResult[] | null {
+  if (!isRecord(report) || !Array.isArray(report["testResults"])) return null;
+  const files: FileResult[] = [];
+  for (const f of report["testResults"] as unknown[]) {
+    if (!isRecord(f) || typeof f["name"] !== "string" || typeof f["status"] !== "string" || !Array.isArray(f["assertionResults"])) return null;
+    const assertions: Assertion[] = [];
+    for (const a of f["assertionResults"] as unknown[]) {
+      if (!isRecord(a) || typeof a["status"] !== "string") return null;
+      assertions.push({ status: a["status"], fullName: typeof a["fullName"] === "string" ? a["fullName"] : "(بدون نام)" });
+    }
+    files.push({ name: f["name"], status: f["status"], assertions });
+  }
+  return files;
+}
+
+/** ارزیابی خالص گزارش JSON ویتست؛ هر چیزِ نامعمول یا مبهم = شکست (ایمن‌به‌طور پیش‌فرض). */
+export function evaluateReport(report: unknown, options: GateOptions): GateResult {
+  const files = parseReport(report);
+  if (files === null) {
+    return { ok: false, problems: ["گزارش آزمون ناخوانا/نامعتبر است (ساختار JSON ویتست نیست)."], summary: EMPTY, skippedTests: [], failedTests: [], todoTests: [] };
+  }
+  const skippedTests: string[] = [];
+  const failedTests: string[] = [];
+  const todoTests: string[] = [];
+  const problems: string[] = [];
+  let passed = 0;
+
+  for (const file of files) {
+    const label = file.name.replace(/\\/g, "/");
+    // فایلی که اصلاً بارگذاری نشده (خطای import/سینتکس) assertion ندارد ولی وضعیتش failed است.
+    if (file.status !== "passed" && file.status !== "skipped" && file.assertions.every((a) => a.status !== "failed")) {
+      failedTests.push(`${label} (فایل اجرا نشد: ${file.status})`);
+    }
+    if (file.status === "skipped" && file.assertions.length === 0) skippedTests.push(`${label} (کل فایل رد شد)`);
+    for (const a of file.assertions) {
+      const entry = `${label} › ${a.fullName}`;
+      if (a.status === "passed") passed++;
+      else if (a.status === "failed") failedTests.push(entry);
+      else if (a.status === "todo") todoTests.push(entry);
+      else skippedTests.push(entry); // skipped | pending | disabled | هر وضعیت ناشناخته ⇒ «اجرا نشده»
+    }
+  }
+
+  if (failedTests.length > 0) problems.push(`${failedTests.length} تست/فایل شکست خورد.`);
+  if (skippedTests.length > 0) problems.push(`${skippedTests.length} تست رد (skip) شد؛ در CI هیچ تستی نباید رد شود (پایگاه آزمون تنظیم و در دسترس باشد).`);
+  if (passed < options.minPassed) problems.push(`فقط ${passed} تست سبز شد؛ کف مقرر ${options.minPassed} است (آیا فایل تستی از اجرا خارج شده؟).`);
+
+  const summary: GateSummary = { files: files.length, passed, failed: failedTests.length, skipped: skippedTests.length, todo: todoTests.length };
+  return { ok: problems.length === 0, problems, summary, skippedTests, failedTests, todoTests };
+}
+
+// ───────────────────────────── اجرای خط فرمان ─────────────────────────────
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function say(line: string): void {
+  process.stdout.write(`${line}\n`);
+}
+
+function annotate(kind: "error" | "warning" | "notice", message: string): void {
+  if (process.env["GITHUB_ACTIONS"] === "true") say(`::${kind}::${message.replace(/\r?\n/g, " ")}`);
+}
+
+function stepSummary(markdown: string): void {
+  const file = process.env["GITHUB_STEP_SUMMARY"];
+  if (file) appendFileSync(file, `${markdown}\n`);
+}
+
+/** نشانی پایگاه آزمون؛ هرگز کامل چاپ نمی‌شود (ممکن است گذرواژه داشته باشد). */
+function testDbUrl(): string | undefined {
+  const url = process.env["KB_TEST_DATABASE_URL"] ?? process.env["DATABASE_URL"];
+  return url !== undefined && url !== "" ? url : undefined;
+}
+
+async function preflightDatabase(url: string): Promise<string | null> {
+  const pool = new pg.Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 15_000 });
+  try {
+    const r = await pool.query<{ version: string; can_create: boolean }>(
+      "select version() as version, has_database_privilege(current_user, current_database(), 'CREATE') as can_create",
+    );
+    const row = r.rows[0];
+    if (!row) return "پایگاه پاسخ خالی داد.";
+    if (!row.can_create) return "کاربر پایگاه اجازهٔ CREATE (ساخت شِمای آزمون) ندارد.";
+    say(`✔ پایگاه آزمون در دسترس است: ${row.version.split(",")[0] ?? row.version}`);
+    return null;
+  } catch (e) {
+    const code = isRecord(e) && typeof e["code"] === "string" ? ` [${e["code"]}]` : "";
+    return `اتصال به پایگاه آزمون ممکن نشد${code} (نشانی را در KB_TEST_DATABASE_URL/DATABASE_URL بررسی کنید).`;
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
+
+function vitestEntry(): string {
+  const require = createRequire(join(ROOT, "package.json"));
+  const pkgPath = require.resolve("vitest/package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { bin?: string | Record<string, string> };
+  const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.["vitest"];
+  if (!bin) throw new Error("ورودی اجرایی vitest پیدا نشد.");
+  return join(dirname(pkgPath), bin);
+}
+
+function fail(message: string): never {
+  annotate("error", message);
+  process.stderr.write(`✘ ${message}\n`);
+  stepSummary(`### ❌ دروازهٔ تست شکست خورد\n\n${message}\n`);
+  process.exit(1);
+}
+
+async function main(): Promise<void> {
+  dotenv.config({ quiet: true });
+  const url = testDbUrl();
+  if (url === undefined) {
+    fail("پایگاه آزمون تنظیم نشده است: KB_TEST_DATABASE_URL یا DATABASE_URL لازم است. (تست‌های پایگاه نباید رد شوند.)");
+  }
+  const dbProblem = await preflightDatabase(url);
+  if (dbProblem !== null) fail(dbProblem);
+
+  const reportDir = join(ROOT, "test-results");
+  mkdirSync(reportDir, { recursive: true });
+  const reportPath = join(reportDir, "vitest-report.json");
+
+  const run = spawnSync(process.execPath, [vitestEntry(), "run", "--reporter=default", "--reporter=json", `--outputFile.json=${reportPath}`], {
+    cwd: ROOT,
+    stdio: "inherit",
+    env: { ...process.env, CI: "true" },
+  });
+  if (run.error) fail(`اجرای vitest ممکن نشد: ${run.error.message}`);
+  if (!existsSync(reportPath)) fail("vitest گزارش JSON نساخت (احتمالاً پیش از اجرای تست‌ها از کار افتاد).");
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(reportPath, "utf8"));
+  } catch {
+    fail("گزارش JSON ویتست قابل خواندن نیست.");
+  }
+  const minPassed = Number.parseInt(process.env["CI_MIN_PASSED"] ?? "", 10) || MIN_PASSED_TESTS;
+  const result = evaluateReport(parsed, { minPassed });
+  const s = result.summary;
+
+  say("\n──────── دروازهٔ صفر-رد ────────");
+  say(`فایل: ${s.files} | سبز: ${s.passed} | شکست: ${s.failed} | رد‌شده: ${s.skipped} | todo: ${s.todo} | کف سبز: ${minPassed}`);
+  for (const t of result.failedTests) say(`  ✘ شکست: ${t}`);
+  for (const t of result.skippedTests.slice(0, 30)) say(`  ⤼ رد‌شده: ${t}`);
+  if (result.skippedTests.length > 30) say(`  … و ${result.skippedTests.length - 30} مورد دیگر`);
+  if (result.todoTests.length > 0) {
+    say(`ℹ ${result.todoTests.length} مورد todo (منتظر نمونهٔ مرجع حقوقدان؛ رد‌شده حساب نمی‌شود).`);
+    annotate("notice", `${result.todoTests.length} تست todo منتظر نمونهٔ مرجع حقوقدان است.`);
+  }
+
+  const table = `| فایل | سبز | شکست | رد‌شده | todo |\n|---|---|---|---|---|\n| ${s.files} | ${s.passed} | ${s.failed} | ${s.skipped} | ${s.todo} |`;
+  if (!result.ok || run.status !== 0) {
+    const reasons = [...result.problems, ...(run.status !== 0 ? [`vitest با کد ${String(run.status)} پایان یافت.`] : [])];
+    for (const p of reasons) say(`✘ ${p}`);
+    fail(reasons.join(" "));
+  }
+  say("✔ همهٔ تست‌ها واقعاً اجرا و سبز شدند (۰ رد، ۰ شکست).");
+  stepSummary(`### ✅ دروازهٔ تست سبز\n\n${table}\n\n۰ رد‌شده؛ تست‌های پایگاه واقعاً اجرا شدند. (${s.todo} todo منتظر حقوقدان)`);
+}
+
+const entry = process.argv[1];
+if (entry !== undefined && import.meta.url === pathToFileURL(resolve(entry)).href) {
+  main().catch((e: unknown) => fail(`خطای پیش‌بینی‌نشده در اجراگر: ${e instanceof Error ? e.message : String(e)}`));
+}
