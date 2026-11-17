@@ -28,6 +28,14 @@ import pg from "pg";
  */
 export const MIN_PASSED_TESTS = 603;
 
+/**
+ * کد خروجیِ «پایگاه آزمون در دسترس نیست» (تنظیم‌نشده، اتصال ناممکن یا بدون دسترسی CREATE) — جدا از «تست شکست خورد» (۱).
+ * چرا؟ هوک `pre-push` محلی باید بتواند این دو را تشخیص دهد: نبودن پایگاه در ماشین توسعه هشدار است (دروازهٔ نهایی CI است)،
+ * ولی شکستِ واقعی تست همیشه مسدودکننده است. CI و «کنترل منفی» فقط «غیرصفر» را می‌سنجند؛ پس این کد دروازه را ضعیف نمی‌کند.
+ * مقدار باید با `GATE_EXIT_DB_UNAVAILABLE` در `git-discipline.ts` یکی بماند (آزمون همگامی در `pre-push-gate.test.ts`).
+ */
+export const EXIT_DB_UNAVAILABLE = 3;
+
 export type GateOptions = Readonly<{ minPassed: number }>;
 
 export type GateSummary = Readonly<{
@@ -201,21 +209,21 @@ function vitestEntry(): string {
   return join(dirname(pkgPath), bin);
 }
 
-function fail(message: string): never {
+function fail(message: string, exitCode = 1): never {
   annotate("error", message);
   process.stderr.write(`✘ ${message}\n`);
   if (!IS_SELF_CHECK) stepSummary(`### ❌ دروازهٔ تست شکست خورد\n\n${message}\n`);
-  process.exit(1);
+  process.exit(exitCode);
 }
 
 async function main(): Promise<void> {
   dotenv.config({ quiet: true });
   const url = testDbUrl();
   if (url === undefined) {
-    fail("پایگاه آزمون تنظیم نشده است: KB_TEST_DATABASE_URL یا DATABASE_URL لازم است. (تست‌های پایگاه نباید رد شوند.)");
+    fail("پایگاه آزمون تنظیم نشده است: KB_TEST_DATABASE_URL یا DATABASE_URL لازم است. (تست‌های پایگاه نباید رد شوند.)", EXIT_DB_UNAVAILABLE);
   }
   const dbProblem = await preflightDatabase(url);
-  if (dbProblem !== null) fail(dbProblem);
+  if (dbProblem !== null) fail(dbProblem, EXIT_DB_UNAVAILABLE);
 
   const reportDir = join(ROOT, "test-results");
   mkdirSync(reportDir, { recursive: true });

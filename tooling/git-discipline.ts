@@ -339,6 +339,56 @@ export function checkPushUpdates(updates: readonly PushUpdate[], git: PushGit): 
   return { violations: out, needsGate };
 }
 
+// ───────────────────────── دروازهٔ پیش از پوش و نبودن پایگاه ─────────────────────────
+
+/**
+ * کد خروجی `tooling/ci-tests.ts` برای «پایگاه آزمون در دسترس نیست» (نه «تست شکست خورد» که ۱ است).
+ * باید با `EXIT_DB_UNAVAILABLE` در ci-tests.ts یکی بماند؛ آزمونِ همگامی در `pre-push-gate.test.ts` این را می‌سنجد.
+ * (عمداً import نمی‌کنیم: ci-tests.ts به `pg` و `dotenv` وابسته است و هر هوک را کند می‌کرد.)
+ */
+export const GATE_EXIT_DB_UNAVAILABLE = 3;
+
+const TRUTHY = /^(1|true|yes)$/i;
+
+/**
+ * «سخت‌گیر» = نبودن پایگاه هم مسدودکننده است. در CI و هر محیط خودکار (`CI`، `GITHUB_ACTIONS`) و وقتی کاربر صریحاً
+ * `GIT_DISCIPLINE_REQUIRE_DB=1` بگذارد. چرا؟ تسامحِ نبودن پایگاه فقط برای ماشین توسعه‌ای است که دروازهٔ نهایی (CI) پشتش هست؛
+ * جایی که خودش دروازهٔ نهایی است نباید هیچ تسامحی داشته باشد (ADR-0006: «سبزِ بی‌اجرا» پذیرفتنی نیست).
+ */
+export function isStrictGateEnv(env: Readonly<Record<string, string | undefined>>): boolean {
+  const on = (k: string): boolean => TRUTHY.test((env[k] ?? "").trim());
+  return on("CI") || on("GITHUB_ACTIONS") || on("GIT_DISCIPLINE_REQUIRE_DB");
+}
+
+export type GateRun = Readonly<{ status: number | null; signal?: string | null; spawnFailed?: boolean }>;
+export type GateOutcome = Readonly<{ kind: "pass" | "warn" | "block"; message: string }>;
+
+/**
+ * تصمیم خالصِ هوک `pre-push` دربارهٔ نتیجهٔ دروازه:
+ *  - کد ۰ ⇒ می‌گذرد؛
+ *  - فقط «پایگاه در دسترس نیست» (کد ۳) و حالت غیرسخت‌گیر ⇒ **هشدار** و پوش آزاد؛
+ *  - هر چیز دیگر (تست شکست‌خورده، کف سبز، اجرانشدن اجراگر، سیگنال، کد ناشناخته) ⇒ مسدود.
+ * ایمن‌به‌طور پیش‌فرض: فقط یک حالتِ دقیقاً شناخته‌شده تسامح می‌گیرد.
+ */
+export function decideGateOutcome(run: GateRun, strict: boolean): GateOutcome {
+  if (run.spawnFailed !== true && run.status === 0) return { kind: "pass", message: "" };
+  if (run.spawnFailed !== true && run.status === GATE_EXIT_DB_UNAVAILABLE) {
+    if (strict) {
+      return { kind: "block", message: "✖ پایگاه آزمون در دسترس نیست و محیط سخت‌گیر است (CI/GIT_DISCIPLINE_REQUIRE_DB)؛ پوش رد شد. تست‌های پایگاه نباید رد شوند." };
+    }
+    return {
+      kind: "warn",
+      message: [
+        "⚠ هشدار: پایگاه آزمون در این ماشین در دسترس نیست؛ دروازهٔ تست پیش از پوش اجرا نشد و پوش مجاز است.",
+        "  دروازهٔ اصلی CI گیت‌هاب است و تست‌ها همان‌جا روی PostgreSQL واقعی اجرا می‌شوند: پیش از هر اقدام بعدی سبز شدنش را ببینید",
+        "  و تا آن زمان تگ green/* نزنید (G9). (شکست واقعی تست همچنان پوش را مسدود می‌کند؛ الزام پایگاه: GIT_DISCIPLINE_REQUIRE_DB=1.)",
+      ].join("\n"),
+    };
+  }
+  const how = run.spawnFailed === true ? "اجراگر اجرا نشد" : run.signal ? `با سیگنال ${run.signal} پایان یافت` : `با کد ${String(run.status)} پایان یافت`;
+  return { kind: "block", message: `✖ «دروازهٔ صفر-رد پیش از پوش» قرمز است (${how}); پوش رد شد.` };
+}
+
 // ───────────────────────── تجزیهٔ خروجی git (خالص) ─────────────────────────
 
 /** خروجی `git diff --name-status -z` */
@@ -465,7 +515,15 @@ function cmdPrePush(): void {
   });
   if (verdict.violations.length > 0) fail(formatViolations("پوش پذیرفته نشد", verdict.violations));
   if (git(["status", "--porcelain", "--untracked-files=no"]).out.trim() !== "") fail("✖ درخت کاری تمیز نیست؛ آنچه پوش می‌شود با آنچه تست می‌شود فرق دارد. ابتدا کامیت یا stash کنید.");
-  if (verdict.needsGate) runStep("دروازهٔ صفر-رد پیش از پوش", ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", resolve(SELF_DIR, "ci-tests.ts")]);
+  if (verdict.needsGate) runPushGate();
+}
+
+function runPushGate(): void {
+  process.stdout.write("▶ دروازهٔ صفر-رد پیش از پوش\n");
+  const r = spawnSync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", resolve(SELF_DIR, "ci-tests.ts")], { cwd: REPO_ROOT, stdio: "inherit", env: process.env });
+  const outcome = decideGateOutcome({ status: r.status, signal: r.signal, spawnFailed: r.error !== undefined }, isStrictGateEnv(process.env));
+  if (outcome.kind === "block") fail(outcome.message);
+  if (outcome.kind === "warn") process.stderr.write(`${outcome.message}\n`);
 }
 
 function cmdCheckRange(range: string | undefined): void {
