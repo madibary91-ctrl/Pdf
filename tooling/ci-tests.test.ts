@@ -90,7 +90,7 @@ describe("tooling: دروازهٔ صفر-رد (evaluateReport)", () => {
     }
   });
 
-  it("کف مقرر با وضعیت تحویل ۴ب‑۲ هم‌خوان است (۶۰۳)", () => {
-    expect(MIN_PASSED_TESTS).toBe(603);
+  it("کف مقرر با وضعیت تحویل ۴ب‑۳ هم‌خوان است (۷۳۵)", () => {
+    expect(MIN_PASSED_TESTS).toBe(735);
   });
 });
