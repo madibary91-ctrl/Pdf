@@ -107,6 +107,36 @@ export function evaluateReport(report: unknown, options: GateOptions): GateResul
   return { ok: problems.length === 0, problems, summary, skippedTests, failedTests, todoTests };
 }
 
+/**
+ * علتِ شکست‌ها از گزارش JSON (خالص و آزمون‌پذیر): «نام تست + اولین خط پیام خطا».
+ * بدون این، فقط «۱ تست شکست خورد» دیده می‌شد و برای یافتن علت باید لاگ کامل (نیازمند دسترسی) باز می‌شد؛
+ * اکنون همین فهرست در خروجی، annotation و Step Summary گیت‌هاب می‌آید.
+ */
+export function describeFailures(report: unknown, limit = 20): readonly string[] {
+  if (!isRecord(report) || !Array.isArray(report["testResults"])) return [];
+  const out: string[] = [];
+  for (const f of report["testResults"] as unknown[]) {
+    if (!isRecord(f) || typeof f["name"] !== "string") continue;
+    const label = f["name"].replace(/\\/g, "/").replace(/^.*\/((?:src|tooling)\/)/, "$1");
+    let reported = false;
+    for (const a of Array.isArray(f["assertionResults"]) ? (f["assertionResults"] as unknown[]) : []) {
+      if (!isRecord(a) || a["status"] !== "failed") continue;
+      reported = true;
+      const first = Array.isArray(a["failureMessages"]) && typeof a["failureMessages"][0] === "string" ? firstLine(a["failureMessages"][0]) : "(بدون پیام)";
+      out.push(`${label} › ${typeof a["fullName"] === "string" ? a["fullName"] : "(بدون نام)"} — ${first}`);
+    }
+    // فایلی که اصلاً بارگذاری نشد (خطای import/سینتکس): پیام در سطح فایل است.
+    if (!reported && f["status"] === "failed") out.push(`${label} — ${typeof f["message"] === "string" && f["message"] !== "" ? firstLine(f["message"]) : "فایل اجرا نشد"}`);
+  }
+  if (out.length > limit) return [...out.slice(0, limit), `… و ${out.length - limit} مورد دیگر`];
+  return out;
+}
+
+function firstLine(text: string): string {
+  const clean = text.replace(/\u001b\[[0-9;]*m/g, "");
+  return (clean.split(/\r?\n/).find((l) => l.trim() !== "") ?? "(بدون پیام)").trim().slice(0, 300);
+}
+
 // ───────────────────────────── اجرای خط فرمان ─────────────────────────────
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -115,8 +145,21 @@ function say(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
+/**
+ * خطِ annotation گیت‌هاب (خالص). در «کنترل منفی» (`CI_GATE_SELF_CHECK=1`) قرمز‌شدنِ دروازه **مورد انتظار** است؛
+ * اگر همان `::error::` چاپ شود، صفحهٔ اجرا یک خطای قرمز نشان می‌دهد در حالی که گام سبز است و کاربر را به اشتباه می‌اندازد
+ * (دقیقاً همان پیام «KB_TEST_DATABASE_URL یا DATABASE_URL لازم است» که علت شکست واقعی نبود). پس به `notice` با برچسب روشن تنزل می‌یابد.
+ */
+export function gateAnnotation(kind: "error" | "warning" | "notice", message: string, selfCheck: boolean): string {
+  const text = message.replace(/\r?\n/g, " ");
+  if (selfCheck && kind === "error") return `::notice::[کنترل منفی؛ شکست مورد انتظار است و علت شکست CI نیست] ${text}`;
+  return `::${kind}::${text}`;
+}
+
+const IS_SELF_CHECK = process.env["CI_GATE_SELF_CHECK"] === "1";
+
 function annotate(kind: "error" | "warning" | "notice", message: string): void {
-  if (process.env["GITHUB_ACTIONS"] === "true") say(`::${kind}::${message.replace(/\r?\n/g, " ")}`);
+  if (process.env["GITHUB_ACTIONS"] === "true") say(gateAnnotation(kind, message, IS_SELF_CHECK));
 }
 
 function stepSummary(markdown: string): void {
@@ -161,7 +204,7 @@ function vitestEntry(): string {
 function fail(message: string): never {
   annotate("error", message);
   process.stderr.write(`✘ ${message}\n`);
-  stepSummary(`### ❌ دروازهٔ تست شکست خورد\n\n${message}\n`);
+  if (!IS_SELF_CHECK) stepSummary(`### ❌ دروازهٔ تست شکست خورد\n\n${message}\n`);
   process.exit(1);
 }
 
@@ -210,6 +253,12 @@ async function main(): Promise<void> {
   if (!result.ok || run.status !== 0) {
     const reasons = [...result.problems, ...(run.status !== 0 ? [`vitest با کد ${String(run.status)} پایان یافت.`] : [])];
     for (const p of reasons) say(`✘ ${p}`);
+    const details = describeFailures(parsed);
+    for (const d of details) say(`  ↳ ${d}`);
+    if (details.length > 0) {
+      for (const d of details) annotate("error", d);
+      stepSummary(`### ❌ علت شکست‌ها\n\n${details.map((d) => `- ${d}`).join("\n")}\n`);
+    }
     fail(reasons.join(" "));
   }
   say("✔ همهٔ تست‌ها واقعاً اجرا و سبز شدند (۰ رد، ۰ شکست).");
