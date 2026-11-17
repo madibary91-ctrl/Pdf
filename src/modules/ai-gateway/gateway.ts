@@ -34,7 +34,7 @@ import type {
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** ساعتِ خراب (غیرعددی/نامتناهی/پرتاب‌کننده) بلند شکست می‌خورد (`INTERNAL_ERROR`)، نه با زمان جعلی ادامه. */
-function readClock(clock: Clock): number {
+export function readClock(clock: Clock): number {
   const t = clock.nowMs();
   if (typeof t !== "number" || !Number.isFinite(t)) throw new Error("clock returned a non-finite value");
   return t;
@@ -55,7 +55,10 @@ async function emit(cfg: ResolvedConfig, event: UsageEvent): Promise<GatewayWarn
 type Failure = Readonly<{ code: GatewayErrorCode; extra?: Parameters<typeof makeError>[1] }>;
 type Interpreted = Readonly<{ kind: "ok"; reply: ParsedReply }> | Readonly<{ kind: "fail"; failure: Failure }>;
 
-async function run(cfg: ResolvedConfig, input: unknown, options: unknown): Promise<GatewayResult<Completion>> {
+/** مشاهده‌گر رویداد مصرفِ همین فراخوانی (برش ۲: هم‌بسته‌سازیِ مطمئنِ رویداد با تلاش). پرتاب کند نادیده گرفته می‌شود. */
+export type UsageObserver = (event: UsageEvent) => void;
+
+async function run(cfg: ResolvedConfig, input: unknown, options: unknown, observe?: UsageObserver): Promise<GatewayResult<Completion>> {
   let signal: AbortSignal | undefined;
   if (options !== undefined) {
     const s = isRecord(options) ? options["signal"] : null;
@@ -132,6 +135,13 @@ async function run(cfg: ResolvedConfig, input: unknown, options: unknown): Promi
     usage,
     cost,
   });
+  if (observe !== undefined) {
+    try {
+      observe(event);
+    } catch {
+      // مشاهده‌گر هرگز نتیجهٔ فراخوانی را عوض نمی‌کند.
+    }
+  }
   const sinkWarnings = await emit(cfg, event);
 
   if (interpreted.kind === "fail") return fail(interpreted.failure.code, { ...interpreted.failure.extra, warnings: sinkWarnings });
@@ -151,6 +161,18 @@ async function run(cfg: ResolvedConfig, input: unknown, options: unknown): Promi
       warnings: Object.freeze([...warnings, ...sinkWarnings]),
     }),
   };
+}
+
+/**
+ * همان خط لولهٔ `complete` روی پیکربندیِ از-پیش-سنجیده، با یک مشاهده‌گر برای رویداد مصرف (ADR-0015 §۹).
+ * هرگز پرتاب نمی‌کند؛ لایهٔ تاب‌آوری (برش ۲) تنها مصرف‌کنندهٔ آن است.
+ */
+export async function completeObserved(cfg: ResolvedConfig, input: unknown, options: unknown, observe: UsageObserver): Promise<GatewayResult<Completion>> {
+  try {
+    return await run(cfg, input, options, observe);
+  } catch {
+    return fail("INTERNAL_ERROR");
+  }
 }
 
 /** سازندهٔ دروازه. پیکربندی `unknown` است و روی مرز سنجیده می‌شود؛ هرگز پرتاب نمی‌کند. */

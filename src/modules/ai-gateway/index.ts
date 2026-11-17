@@ -1,5 +1,26 @@
-/** رابط عمومی ai-gateway (برش ۱: هسته)؛ هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود. */
+/** رابط عمومی ai-gateway (برش ۱: هسته؛ برش ۲: تلاش دوباره و جایگزین)؛ هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود. */
 export { createGateway } from "./gateway";
+export { createResilientGateway } from "./resilience";
+export { resolvePolicy, POLICY_LIMITS, RETRYABLE_CODES, FALLBACK_ELIGIBLE_CODES } from "./resilience-policy";
+export { computeBackoff, sanitizeUnit } from "./backoff";
+export { decideNext } from "./decision";
+export type { Decision, DecisionInput } from "./decision";
+export type {
+  AttemptRecord,
+  FallbackEligibleCode,
+  JitterMode,
+  RandomSource,
+  ResiliencePolicy,
+  ResilienceReport,
+  ResilientCompletion,
+  ResilientError,
+  ResilientGateway,
+  ResilientResult,
+  ResolvedPolicy,
+  RetryableCode,
+  SpendEntry,
+  StopReason,
+} from "./resilience-types";
 export { resolveConfig, LIMITS as CONFIG_LIMITS } from "./config";
 export { parseRequest, REQUEST_LIMITS } from "./request";
 export { computeCost, parsePrice, parseUsage, PRICE_LIMITS } from "./pricing";

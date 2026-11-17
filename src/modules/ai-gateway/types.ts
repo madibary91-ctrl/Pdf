@@ -140,7 +140,11 @@ export type GatewayWarning =
   | "OUTPUT_TRUNCATED"
   | "EMPTY_OUTPUT"
   | "USAGE_SINK_FAILED"
-  | "USAGE_SINK_TIMEOUT";
+  | "USAGE_SINK_TIMEOUT"
+  /** برش ۲: پیش از نتیجه دست‌کم یک تلاش دوباره بر همان مدل رفت؛ `cost`/`usage` فقط مالِ آخرین تلاش است (کل در `report.spend`). */
+  | "RETRIED"
+  /** برش ۲: دست‌کم یک تلاش بر مدل/ارائه‌دهندهٔ جایگزین رسید (داده به ارائه‌دهندهٔ دیگری رفته). */
+  | "FELL_BACK";
 
 export type Completion = Readonly<{
   text: string;
