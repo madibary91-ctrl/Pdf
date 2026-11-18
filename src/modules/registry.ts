@@ -69,6 +69,7 @@ export const MODULES: readonly ModuleInfo[] = [
   m("retrieval", 3, 6, "بازیابی", "بازیابی ترکیبی از پایگاه دانش با فیلتر تاریخ اعتبار", ["legal-kb-store", "persian-text"], false, false, "done"),
   m("citation-verifier", 3, 6, "راستی‌آزمایی استناد", "تطبیق هر ارجاع با رکورد واقعی؛ حذف/علامت‌گذاری ارجاع نامعتبر", ["legal-kb-schema", "shared-types"], true, true, "done"),
   m("calc-tools", 3, 6, "ابزار محاسبه برای مدل", "ابزارهایی که مدل برای محاسبه صدا می‌زند", ["legal-calc"], true, false),
+  m("metering", 4, 8, "اندازه‌گیری مصرف", "رزرو بدترین هزینه، مصرف هزینهٔ واقعی و بازگشت/سوخت باقیمانده روی دفتر اعتبار برای هر تماس مدل", ["ai-gateway", "ledger"], false, true),
   m("ai-orchestrator", 4, 7, "ارکستراتور", "خط لولهٔ کامل هر درخواست: زمینه، بازیابی، تولید، راستی‌آزمایی، ثبت", ["ai-gateway", "retrieval", "citation-verifier", "calc-tools", "doc-templates-core", "ledger"], false, true),
   m("api", 4, 8, "API اصلی", "حساب، اشتراک، میز کار وب، فایل‌ها، لایسنس", ["identity", "ledger", "ai-orchestrator"], false, true),
   m("web-app", 5, 9, "وب‌اپ", "رابط وب مستقل", ["api", "ui-rtl"], false, false),
