@@ -1,11 +1,14 @@
 /**
- * رابط عمومی settlement (م۳ الف: outbox و رفتگر تسویهٔ metering؛ ADR-0021). هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود.
+ * رابط عمومی settlement (م۳ الف: outbox و رفتگر تسویهٔ metering، ADR-0021؛ م۳ ب: outbox ماندگار روی PostgreSQL، ADR-0022).
+ * هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود.
  */
 export { createDurableMeteredGateway } from "./durable-gateway";
 export { createDurableLedger } from "./durable-ledger";
 export { createSettlementSweeper } from "./sweeper";
 export { createMemoryOutbox } from "./memory-outbox";
 export { SETTLEMENT_LIMITS } from "./config";
+export { createPgSettlementOutbox, SETTLEMENT_DEFAULT_SCHEMA } from "./pg";
+export type { PgSettlementOutbox, PgSettlementOutboxOptions } from "./pg";
 export type {
   BeginInput,
   BuriedItem,

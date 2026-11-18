@@ -40,14 +40,16 @@ describe("settlement · نگهبان منبع", () => {
         expect(spec === "@/modules/ledger" || spec === "@/modules/metering" || /^\.\/[a-z-]+$/.test(spec), `${s.name}: ${spec}`).toBe(true);
       }
       expect(s.code, s.name).not.toMatch(/import\s*\(/);
-      expect(s.code, s.name).not.toMatch(/\b(pg|drizzle-orm|@\/db)\b/);
+      // ADR-0022: تنها استثنا بازصادرِ آداپتور `./pg` در index.ts است (پوشهٔ pg/ را settlement/pg/guard.test.ts نگهبانی می‌کند).
+      const body = s.name === "index.ts" ? s.code.replace(/from\s+["']\.\/pg["']/g, "") : s.code;
+      expect(body, s.name).not.toMatch(/\b(pg|drizzle-orm|@\/db)\b/);
     }
   });
   it("رشتهٔ اتصال، کلید یا اسرار در کد نیست", () => {
     for (const s of sources) expect(s.code, s.name).not.toMatch(/postgres(ql)?:\/\/|sk-[A-Za-z0-9]{10,}|api[_-]?key|password/i);
   });
   it("رابط عمومی فقط نام‌های اعلام‌شده را صادر می‌کند", () => {
-    expect(Object.keys(api).sort()).toEqual(["SETTLEMENT_LIMITS", "createDurableLedger", "createDurableMeteredGateway", "createMemoryOutbox", "createSettlementSweeper"]);
+    expect(Object.keys(api).sort()).toEqual(["SETTLEMENT_DEFAULT_SCHEMA", "SETTLEMENT_LIMITS", "createDurableLedger", "createDurableMeteredGateway", "createMemoryOutbox", "createPgSettlementOutbox", "createSettlementSweeper"]);
   });
   it("هیچ تستی در این ماژول .skip/.only/xit/todo ندارد", () => {
     for (const n of readdirSync(DIR).filter((f) => f.endsWith(".test.ts") && f !== "purity.test.ts")) {
