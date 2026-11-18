@@ -28,7 +28,7 @@ export const TEST_APP_NAME = `settlement-test-${process.pid}-${randomBytes(3).to
 /** شمارِ اتصال‌های زندهٔ همین فرایندِ آزمون روی سرور (با اتصالِ کوتاه‌عمرِ جدا که خودش شمرده نمی‌شود). */
 export async function countOwnConnections(): Promise<number> {
   if (!HAS_DB) throw new Error("پایگاه آزمون تنظیم نشده است (KB_TEST_DATABASE_URL یا DATABASE_URL).");
-  const probe = new Pool({ connectionString: TEST_DB_URL, max: 1 });
+  const probe = new Pool({ connectionString: TEST_DB_URL, max: 1, idleTimeoutMillis: TEST_POOL_IDLE_MS });
   try {
     const res = await probe.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1", [TEST_APP_NAME]);
     return Number((res.rows[0] as { n: number }).n);
@@ -104,7 +104,7 @@ export async function openPgOutbox(poolSize = 10, schema = newSchemaName(), migr
     },
     dispose: async () => {
       if (!schema.startsWith("settlement_test_")) throw new Error("امتناع از حذف شِمایی که آزمونی نیست.");
-      const cleaner = new Pool({ connectionString: TEST_DB_URL, max: 1 });
+      const cleaner = new Pool({ connectionString: TEST_DB_URL, max: 1, idleTimeoutMillis: TEST_POOL_IDLE_MS });
       try {
         await drizzle(cleaner).execute(sql`DROP SCHEMA IF EXISTS ${sql.identifier(schema)} CASCADE`);
       } finally {
