@@ -1,9 +1,23 @@
 /**
- * رابط عمومی ledger (برش ل۱: هستهٔ دفتر اعتبار؛ ADR-0018). ذخیرهٔ ماندگار (PostgreSQL) برش ل۲ است.
+ * رابط عمومی ledger (ل۱: هستهٔ دفتر اعتبار، ADR-0018؛ ل۲: ذخیرهٔ PostgreSQL، ADR-0019).
  * هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود.
  */
 export { createLedger } from "./ledger";
 export { createMemoryStore } from "./memory-store";
+export { createPgAccountStore, LEDGER_DEFAULT_SCHEMA } from "./pg";
+export type {
+  AccountAudit,
+  LedgerDatabase,
+  LedgerExecutor,
+  LedgerTransactionConfig,
+  PgAccountStore,
+  PgMigrationReport,
+  PgMigrationStatus,
+  PgStoreError,
+  PgStoreErrorCode,
+  PgStoreOptions,
+  PgStoreResult,
+} from "./pg";
 export { applyCommand, viewAt } from "./engine";
 export type { EngineOutcome } from "./engine";
 export { checkInvariants, foldJournal } from "./invariants";

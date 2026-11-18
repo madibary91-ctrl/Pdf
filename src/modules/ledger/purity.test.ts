@@ -42,6 +42,6 @@ describe("ledger · هستهٔ بی‌I/O", () => {
   });
   it("رابط عمومی چیزِ داخلی را بیرون نمی‌دهد (فقط نام‌های اعلام‌شده)", async () => {
     const mod = await import("./index");
-    expect(Object.keys(mod).sort()).toEqual(["GRANT_SOURCES", "ID_RE", "LIMITS", "UNIT_RE", "applyCommand", "checkInvariants", "createLedger", "createMemoryStore", "foldJournal", "parseCommand", "parseKey", "viewAt"]);
+    expect(Object.keys(mod).sort()).toEqual(["GRANT_SOURCES", "ID_RE", "LEDGER_DEFAULT_SCHEMA", "LIMITS", "UNIT_RE", "applyCommand", "checkInvariants", "createLedger", "createMemoryStore", "createPgAccountStore", "foldJournal", "parseCommand", "parseKey", "viewAt"]);
   });
 });
