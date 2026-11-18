@@ -136,3 +136,92 @@ export type SweepReport = Readonly<{
 }>;
 
 export type Sweeper = Readonly<{ sweep(): Promise<SweepReport> }>;
+
+// ───────────────────────── م۳‑ج: زمان‌بند رفتگر (ADR-0023) ─────────────────────────
+
+/**
+ * زمان‌سنجِ تزریقی. ماژول هرگز تایمر سراسری نمی‌سازد؛ ریشهٔ ترکیب آن را می‌دهد
+ * (`{ after: (fn, ms) => setTimeout(fn, ms), cancel: (h) => clearTimeout(h as never) }`).
+ * `after` باید پس از `ms` میلی‌ثانیه **یک بار** `fn` را صدا بزند و دستگیره‌ای برگرداند که `cancel` بفهمد.
+ */
+export type LoopTimer = Readonly<{ after(fn: () => void, ms: number): unknown; cancel(handle: unknown): void }>;
+
+/**
+ * - `SWEEP_THREW`: خودِ `sweep()` پرتاب کرد (رفتگرِ ما هرگز نمی‌پرتابد؛ یعنی رفتگرِ تزریقی خراب است).
+ * - `BAD_REPORT`: گزارش شکلِ `SweepReport` نداشت.
+ * - `LIST_FAILED`: فهرستِ سررسیدها خوانده نشد (outbox یا ساعت در دسترس نیست).
+ * - `OUTBOX_FAILURES`: دست‌کم یک رکورد به‌خاطر خطای outbox بسته نشد.
+ * - `SCHEDULE_FAILED`: زمان‌سنج نتوانست گذر بعد را بسازد؛ حلقه از کار افتاد (`stalled`) و باید از بیرون دوباره `start` شود.
+ */
+export type LoopFaultKind = "SWEEP_THREW" | "BAD_REPORT" | "LIST_FAILED" | "OUTBOX_FAILURES" | "SCHEDULE_FAILED";
+
+export type LoopFault = Readonly<{
+  kind: LoopFaultKind;
+  /** شمار شکست‌های پیاپی تا و با همین گذر. */
+  consecutiveFailures: number;
+  /** تأخیرِ گذر بعد؛ `null` اگر گذری زمان‌بندی نشد. */
+  nextDelayMs: number | null;
+}>;
+
+export type LoopRunInfo = Readonly<{
+  /** شمارهٔ گذر (از ۱ از آغازِ ساختِ حلقه). */
+  run: number;
+  /** ساعتِ پایانِ گذر؛ `null` اگر ساعت نامعتبر بود. */
+  atMs: number | null;
+  nextDelayMs: number | null;
+}>;
+
+/**
+ * مشاهده‌گر (زنگ و سنجه). هر متد اختیاری است؛ **هیچ‌کدام await نمی‌شوند** (مشاهده‌گرِ آویزان حلقه را نمی‌ایستاند) و پرتاب/رد‌شدنشان
+ * فقط `observerFailures` را زیاد می‌کند. آنچه می‌گیرند کپیِ منجمدِ حلقه است (دستکاری‌اش اثری ندارد).
+ */
+export type SweepObserver = Readonly<{
+  onReport?(report: SweepReport, info: LoopRunInfo): unknown;
+  /** زنگِ عملیاتی: رکوردهایی که در همین گذر `dead` شدند (هر رکورد فقط یک بار می‌میرد). */
+  onBuried?(items: readonly BuriedItem[], info: LoopRunInfo): unknown;
+  onFault?(fault: LoopFault): unknown;
+}>;
+
+export type SweepLoopConfig = Readonly<{
+  /** رفتگر ساخته‌شده (`createSettlementSweeper`). */
+  sweeper: Sweeper;
+  timer: LoopTimer;
+  clock: Clock;
+  /** همان `graceMs` پیکربندی `createDurableLedger`؛ سقفِ ایمنِ فاصله‌ها از آن می‌آید. */
+  graceMs: number;
+  /** فاصلهٔ گذرها پس از پایانِ گذرِ سالم؛ باید ≤ `⌊graceMs/2⌋` باشد (رزروِ یتیم پیش از انقضا دیده شود). */
+  intervalMs: number;
+  /** سقفِ عقب‌نشینیِ نمایی پس از شکست؛ `intervalMs ≤ … ≤ ⌊graceMs/2⌋`. پیش‌فرض `⌊graceMs/2⌋`. */
+  maxBackoffMs?: number;
+  /** پس از گذرِ پربار (تسویه یا مرگ) تا این شمار گذرِ پیاپی بی‌انتظار (۱…۱۰۰۰). پیش‌فرض ۲۰. */
+  maxDrainRuns?: number;
+  /** حداکثر انتظار `stop()` برای گذرِ در حال اجرا (۱…۳٬۶۰۰٬۰۰۰). پیش‌فرض ۳۰٬۰۰۰. */
+  stopTimeoutMs?: number;
+  observer?: SweepObserver;
+}>;
+
+export type LoopState = "stopped" | "running" | "stopping" | "stalled";
+
+export type SweepLoopStatus = Readonly<{
+  state: LoopState;
+  /** گذری هم‌اکنون در حال اجراست (پس از `stop` ناپاک هم ممکن است true بماند). */
+  busy: boolean;
+  runs: number;
+  consecutiveFailures: number;
+  lastRunAtMs: number | null;
+  /** آخرین گذرِ بی‌شکست؛ برای پایشِ «رفتگر مرده است؟» (اگر خیلی قدیمی است زنگ بزنید). */
+  lastSuccessAtMs: number | null;
+  lastFault: LoopFaultKind | null;
+  totals: Readonly<{ examined: number; settled: number; retryLater: number; raced: number; outboxFailures: number; buried: number; faults: number; observerFailures: number }>;
+}>;
+
+export type LoopStartResult = Readonly<{ started: true }> | Readonly<{ started: false; reason: "ALREADY_RUNNING" | "PREVIOUS_RUN_ACTIVE" | "SCHEDULE_FAILED" }>;
+/** `clean=false`: گذرِ در حال اجرا تا `stopTimeoutMs` تمام نشد (دیگر زمان‌بندی نمی‌شود، ولی هنوز ممکن است کار کند). */
+export type LoopStopResult = Readonly<{ clean: boolean }>;
+
+/** حلقهٔ رفتگر. هیچ متدی نمی‌پرتابد. */
+export type SweepLoop = Readonly<{
+  start(): LoopStartResult;
+  stop(): Promise<LoopStopResult>;
+  status(): SweepLoopStatus;
+}>;

@@ -16,7 +16,7 @@ const sources = readdirSync(DIR)
 
 describe("settlement · نگهبان منبع", () => {
   it("فهرست فایل‌های منبع شناخته‌شده است (فایل تازه باید آگاهانه اضافه شود)", () => {
-    expect(sources.map((s) => s.name).sort()).toEqual(["config.ts", "decorated.ts", "durable-gateway.ts", "durable-ledger.ts", "index.ts", "memory-outbox.ts", "ports.ts", "sweeper.ts", "types.ts", "validate.ts"]);
+    expect(sources.map((s) => s.name).sort()).toEqual(["config.ts", "decorated.ts", "durable-gateway.ts", "durable-ledger.ts", "index.ts", "loop-policy.ts", "memory-outbox.ts", "ports.ts", "sweep-loop.ts", "sweeper.ts", "types.ts", "validate.ts"]);
   });
   it("هیچ فایلی از Date، Math.random، fetch، process، تایمر، performance، require، eval، console یا crypto استفاده نمی‌کند", () => {
     const forbidden: [string, RegExp][] = [
@@ -49,7 +49,7 @@ describe("settlement · نگهبان منبع", () => {
     for (const s of sources) expect(s.code, s.name).not.toMatch(/postgres(ql)?:\/\/|sk-[A-Za-z0-9]{10,}|api[_-]?key|password/i);
   });
   it("رابط عمومی فقط نام‌های اعلام‌شده را صادر می‌کند", () => {
-    expect(Object.keys(api).sort()).toEqual(["SETTLEMENT_DEFAULT_SCHEMA", "SETTLEMENT_LIMITS", "createDurableLedger", "createDurableMeteredGateway", "createMemoryOutbox", "createPgSettlementOutbox", "createSettlementSweeper"]);
+    expect(Object.keys(api).sort()).toEqual(["SETTLEMENT_DEFAULT_SCHEMA", "SETTLEMENT_LIMITS", "createDurableLedger", "createDurableMeteredGateway", "createMemoryOutbox", "createPgSettlementOutbox", "createSettlementSweeper", "createSweepLoop"]);
   });
   it("هیچ تستی در این ماژول .skip/.only/xit/todo ندارد", () => {
     for (const n of readdirSync(DIR).filter((f) => f.endsWith(".test.ts") && f !== "purity.test.ts")) {

@@ -6,7 +6,7 @@ import { checkInvariants, createLedger, createMemoryStore, foldJournal } from "@
 import type { AccountStore, Balance, Clock, JournalEntry, Ledger, LedgerResult } from "@/modules/ledger";
 import type { MeteringConfig } from "@/modules/metering";
 import { createDurableLedger, createMemoryOutbox, createSettlementSweeper } from "./index";
-import type { OutboxResult, SettlementOutbox, Sweeper } from "./index";
+import type { LoopTimer, OutboxResult, SettlementOutbox, SweepReport, Sweeper } from "./index";
 
 type Gateway = MeteringConfig["gateway"];
 
@@ -200,5 +200,109 @@ export function durableConfig(raw: Ledger, gateway: Gateway, outbox: SettlementO
     clock,
     graceMs: GRACE,
     ...over,
+  };
+}
+
+// ───────── زمان‌سنج مجازی و رفتگر ساختگی (م۳‑ج، ADR-0023) ─────────
+/** چند دورِ macrotask تا همهٔ ریزتیک‌های زنجیره‌های async (حلقه، رفتگر، مشاهده‌گر) تمام شوند. */
+export async function flush(rounds = 6): Promise<void> {
+  for (let i = 0; i < rounds; i++) await new Promise<void>((res) => setImmediate(res));
+}
+
+export type ManualTimer = LoopTimer &
+  Readonly<{
+    clock: Clock;
+    now(): number;
+    /** زمان را جلو می‌برد و هر تایمرِ سررسیدشده را به ترتیب (زمان، شمارهٔ ثبت) اجرا و پس از هر کدام `flush` می‌کند. */
+    advance(ms: number): Promise<void>;
+    pending(): number;
+    /** هر تأخیری که با `after` خواسته شد (به ترتیب). */
+    delays: number[];
+    cancelled: number;
+    /** `n` فراخوانیِ بعدیِ `after` بپرتابد (پیام حاوی نشانهٔ نشت). */
+    failAfter(n: number): void;
+    failCancel(on: boolean): void;
+    /** همهٔ تایمرهای آویزان را بدون اجرا نگه می‌دارد ولی `fire(id)` دستی را می‌دهد (برای تایمرِ کهنه/دوباره‌صدا). */
+    fireAll(): void;
+  }>;
+
+export function manualTimer(start = 1_000_000): ManualTimer {
+  let t = start;
+  let seq = 0;
+  const queue = new Map<number, { at: number; fn: () => void }>();
+  const st = { throwAfter: 0, throwCancel: false };
+  const delays: number[] = [];
+  const timer = {
+    delays,
+    cancelled: 0,
+    clock: { nowMs: () => t } as Clock,
+    now: () => t,
+    pending: () => queue.size,
+    failAfter: (n: number) => void (st.throwAfter = n),
+    failCancel: (on: boolean) => void (st.throwCancel = on),
+    fireAll: () => {
+      for (const [id, e] of [...queue]) {
+        queue.delete(id);
+        e.fn();
+      }
+    },
+    after(fn: () => void, ms: number): unknown {
+      delays.push(ms);
+      if (st.throwAfter > 0) {
+        st.throwAfter -= 1;
+        throw new Error("boom: LEAK-CANARY-timer-9c1e");
+      }
+      seq += 1;
+      queue.set(seq, { at: t + ms, fn });
+      return seq;
+    },
+    cancel(h: unknown): void {
+      timer.cancelled += 1;
+      if (st.throwCancel) throw new Error("boom: LEAK-CANARY-cancel-9c1e");
+      queue.delete(h as number);
+    },
+    async advance(ms: number): Promise<void> {
+      const target = t + ms;
+      for (let guard = 0; ; guard++) {
+        if (guard > 20_000) throw new Error("advance: حلقهٔ بی‌پایان (تایمرِ بی‌وقفه)");
+        let pick: number | null = null;
+        for (const [id, e] of queue) if (e.at <= target && (pick === null || e.at < (queue.get(pick) as { at: number }).at)) pick = id;
+        if (pick === null) break;
+        const e = queue.get(pick) as { at: number; fn: () => void };
+        queue.delete(pick);
+        t = Math.max(t, e.at);
+        e.fn();
+        await flush();
+      }
+      t = target;
+      await flush();
+    },
+  };
+  return timer as unknown as ManualTimer;
+}
+
+export const sweepReport = (over: Partial<{ -readonly [K in keyof SweepReport]: SweepReport[K] }> = {}): SweepReport => ({ examined: 0, settled: 0, retryLater: 0, raced: 0, outboxFailures: 0, buried: [], listFailed: false, ...over });
+
+export type FakeSweeper = Sweeper & Readonly<{ calls(): number; maxActive(): number }>;
+/** رفتگر ساختگی: `step(n)` گزارش (یا هر مقدار دلخواه، یا `Error` برای پرتاب، یا Promise) برمی‌گرداند؛ هم‌زمانیِ بیشینه را می‌شمارد. */
+export function fakeSweeper(step: (n: number) => unknown): FakeSweeper {
+  let calls = 0;
+  let active = 0;
+  let maxActive = 0;
+  return {
+    async sweep(): Promise<SweepReport> {
+      calls += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        const r = await step(calls);
+        if (r instanceof Error) throw r;
+        return r as SweepReport;
+      } finally {
+        active -= 1;
+      }
+    },
+    calls: () => calls,
+    maxActive: () => maxActive,
   };
 }
