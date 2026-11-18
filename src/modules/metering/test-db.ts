@@ -23,7 +23,7 @@ export type TestPg = Readonly<{ store: PgAccountStore; dispose(): Promise<void> 
 export async function openPgStore(poolSize = 10): Promise<TestPg> {
   if (!HAS_DB) throw new Error("پایگاه آزمون تنظیم نشده است (KB_TEST_DATABASE_URL یا DATABASE_URL).");
   const schema = `metering_test_${randomBytes(5).toString("hex")}`;
-  const pool = new Pool({ connectionString: TEST_DB_URL, max: poolSize });
+  const pool = new Pool({ connectionString: TEST_DB_URL, max: poolSize, idleTimeoutMillis: 50 }); // بودجهٔ اتصال: ADR-0024
   const db = drizzle(pool);
   const made = createPgAccountStore(db, { schema });
   if (!made.ok) throw new Error(`createPgAccountStore failed: ${made.error.code}`);

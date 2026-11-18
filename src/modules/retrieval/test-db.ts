@@ -27,7 +27,7 @@ export type RetrievalTestKb = Readonly<{
 export async function openRetrievalKb(options: Readonly<{ migrateSearch?: boolean }> = {}): Promise<RetrievalTestKb> {
   if (!HAS_DB) throw new Error("پایگاه آزمون تنظیم نشده است (KB_TEST_DATABASE_URL یا DATABASE_URL).");
   const schema = `legal_kb_test_${randomBytes(5).toString("hex")}`;
-  const pool = new Pool({ connectionString: TEST_DB_URL, max: 4 });
+  const pool = new Pool({ connectionString: TEST_DB_URL, max: 4, idleTimeoutMillis: 50 }); // بودجهٔ اتصال: ADR-0024
   const db = drizzle(pool);
   const made = createKbStore(db, { schema });
   if (!made.ok) throw new Error(made.error.message);
