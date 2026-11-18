@@ -78,5 +78,10 @@ loop.status();                    // state، busy، lastSuccessAtMs، consecutiv
 - «ثبتِ قصد» و «تغییرِ دفتر» دو تراکنشِ جدا هستند (طراحیِ write-ahead، بسته‌شکست)؛ ادغام در یک تراکنش نیازمند تغییرِ قرارداد ledger است (کارِ جدا).
 - فقط روی PostgreSQL ۱۵٫۱۹ و لینوکس آزموده شده (ویندوز نه).
 
+## بودجهٔ اتصال آزمون‌ها و خرابیِ گذرای پایگاه (ADR-0024)
+- ریشهٔ `STORE_FAILURE`های تصادفیِ آزمون‌های `pg/` **محصول نبود**: کمک‌تست استخرها را تا `afterAll` باز می‌گذاشت (۲۴×۴ = ۹۶ اتصال در آزمون تفاضلی) و فایل‌های موازی `53300 too many clients` می‌گرفتند؛ آداپتور درست آن را `STORE_FAILURE` کرد. کمک‌تست‌ها اکنون اتصال بیکار را پس از ۵۰ms می‌دهند (و اتصال‌ها `application_name` دارند).
+- **زیرِ ردِ اتصال یا قطعِ پس از commit** (نتیجهٔ مبهم): همه‌چیز `STORE_FAILURE`ِ ثابت و بی‌نشت است، چیزی نیمه‌نوشته نمی‌ماند و تکرارِ فراخوان برای `begin/recordCharge/recordClose/resolveClose/finish/bury` ایمن و هم‌ارزِ مدلِ مرجع است (آزموده با PostgreSQL واقعی).
+- ⚠️ **`recordFailure` تکرارپذیر نیست** (`attempts+1`): تکرار پس از قطعِ مبهم شمارنده را دوبار می‌افزاید. استخرِ برنامه (`src/db/index.ts`) هم `connectionTimeoutMillis` ندارد؛ هر دو در تحویل ۰۰۲۴ برای تصمیمِ مالک ثبت شده‌اند.
+
 ## آزمون‌ها
 حلقه (م۳‑ج): `loop-policy` (۶۱ مورد؛ جدول + خاصیتی با مرجعِ مستقل + اعتبارسنجیِ گزارش) · `sweep-loop` (پیکربندی، چرخهٔ عمر، تک‌پروازی، عقب‌نشینی، تخلیه، مشاهده‌گر، خرابیِ زمان‌سنج/ساعت/رفتگر) · `sweep-loop.integration` (دفتر و outbox واقعی، ۳۰+۲۰ بذر) · `sweep-loop.pg` (مرگِ فرایند، دو حلقه، قطعِ پایگاه). `outbox-contract` (۴۳ مورد؛ از طریق `memory-outbox.test` **و** `pg/outbox-contract.pg.test` بی‌تغییر) · `durable-ledger` · `sweeper` · `durable-gateway.integration` (حافظه‌ای و PostgreSQL؛ شکافِ ۰۰۲۰، مرگِ واقعیِ تماس، ۳۰ تماس موازی) · `settlement.property` (۴۰ بذر + ۴ بذر PostgreSQL + ادعای پوشش) · `purity`. آداپتور PostgreSQL (`pg/`): `unit` (بی‌پایگاه) · `guard` (نگهبان منبع) · `schema.pg` (قیدها، TRIGGERها، ایندکس‌ها، مهاجرت) · `concurrency.pg` (چندفرایندی) · `differential.pg` (حافظه‌ای ⇄ PostgreSQL) · `durability.pg` (مرگِ واقعیِ فرایند، اتمی‌بودن). جهشی: `python3 tooling/mutation/settlement.py` و `python3 tooling/mutation/settlement-pg.py`.
