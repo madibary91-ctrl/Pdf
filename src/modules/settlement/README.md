@@ -94,7 +94,25 @@ for (const e of pending.ok ? pending.value : []) {
 - **تحویلِ دست‌کم‌یک‌بار:** تا تأیید ثبت نشده رکورد در فهرست می‌ماند؛ مرگِ فرایند میانِ «فهرست» و «تأیید» زنگ را گم نمی‌کند، فقط ممکن است تکراری برسد.
 - تأیید **نوشتن‌یک‌بار** است (اولین `atMs` می‌ماند؛ تکرار با هر زمانی `replayed:true`)، فقط برای `dead` (غیرمرده ⇒ `CONFLICT`، بی‌رکورد ⇒ `NOT_FOUND`) و `listDead`/`get`/`counts` را عوض نمی‌کند.
 - PostgreSQL: مهاجرتِ افزایشیِ `0002_dead_ack` جدولِ `settlement_dead_ack` را می‌سازد (**پیش از استفاده `migrate()`**؛ تا آن‌گاه همهٔ عملیات `STORE_FAILURE` است). مرده‌های پیش از ارتقا «تأییدنشده»‌اند. جدولِ outbox و TRIGGERهایش دست‌نخورده‌اند.
-- ⚠️ **هنوز هیچ‌کس این‌ها را صدا نمی‌زند:** `createSweepLoop`/`onBuried` به آن‌ها سیم‌کشی نشده‌اند (م۳‑د‑۲). `onBuried`ِ حلقه همچنان در حافظه است و با مرگِ فرایند گم می‌شود، تا آن برش.
+- ✅ از م۳‑د‑۲ (ADR-0026) حلقه با گزینهٔ `deadLetters` این‌ها را صدا می‌زند (بخشِ بعد). **بدونِ `deadLetters` همچنان هیچ‌کس صدایشان نمی‌زند** و `onBuried` درون‌حافظه‌ای است و با مرگِ فرایند گم می‌شود.
+
+## زنگِ ماندگارِ مرده‌ها در حلقه (م۳‑د‑۲، ADR-0026)
+```ts
+createSweepLoop({
+  sweeper, timer, clock, graceMs, intervalMs,
+  observer: { onBuried: fastPath },            // اختیاری: سریع، درون‌حافظه‌ای، await نمی‌شود، با مرگ گم می‌شود
+  deadLetters: {
+    outbox,                                    // فقط listUnacknowledgedDead و acknowledgeDead لازم است
+    deliver: async (letter) => { await page(letter); },   // await می‌شود (با مهلت)؛ باید idempotent باشد
+    // batchLimit: 50, maxBatchesPerRun: 5, deliverTimeoutMs: 30_000   (پیش‌فرض‌ها)
+  },
+});
+```
+- هر گذر (از جمله نخستین گذرِ پس از `start`، پس هر ریستارت) **پس از رفتگر** مرده‌های تأییدنشده را می‌خواند، هر کدام را به `deliver` می‌دهد و **فقط پس از موفقیتِ `deliver`** تأیید می‌کند ⇒ تحویلِ **دست‌کم‌یک‌بار**: مرگِ فرایند میانِ تحویل و تأیید ⇒ دوباره می‌رسد؛ پس از تأیید هرگز.
+- `deliver` فقط **نامهٔ منجمدِ** `DeadLetter` را می‌بیند (شناسه‌ها، `unit`، `reserved`، `reason`، `errorCode`، `attempts`، `deadAtMs`)؛ هرگز پیامِ خام.
+- `deliver` پرتاب/رد/مهلت ⇒ تأیید نمی‌شود، همان رکورد در همان گذر دوباره تلاش نمی‌شود (رکوردِ مسموم گرسنگی نمی‌دهد)، خطای `DEAD_DELIVER_FAILED`؛ بقیهٔ رکوردها ادامه می‌دهند. فهرست/تأیید خراب ⇒ `DEAD_LIST_FAILED` / `DEAD_ACK_FAILED`. همه با عقب‌نشینیِ ADR-0023 (سقفِ `⌊graceMs/2⌋`) ⇒ **خرابیِ زنگ تسویهٔ پول را کند نمی‌کند**.
+- بیش از `batchLimit×maxBatchesPerRun` مرده ⇒ گذرِ بعد بی‌انتظار (تخلیه، با سقفِ `maxDrainRuns`). `status().deadLetters` شمارنده‌ها و `lastAckAtMs` را برای پایش می‌دهد.
+- ⚠️ حلقه هنوز در هیچ ریشهٔ ترکیبی سیم‌کشی نشده و `deliver`ِ واقعی (پیامک/ایمیل/صف) وجود ندارد؛ این برش «سازوکارِ رسیدنِ مطمئن» است، نه «مقصد».
 
 ## آزمون‌ها
 حلقه (م۳‑ج): `loop-policy` (۶۱ مورد؛ جدول + خاصیتی با مرجعِ مستقل + اعتبارسنجیِ گزارش) · `sweep-loop` (پیکربندی، چرخهٔ عمر، تک‌پروازی، عقب‌نشینی، تخلیه، مشاهده‌گر، خرابیِ زمان‌سنج/ساعت/رفتگر) · `sweep-loop.integration` (دفتر و outbox واقعی، ۳۰+۲۰ بذر) · `sweep-loop.pg` (مرگِ فرایند، دو حلقه، قطعِ پایگاه). `outbox-contract` (۴۳ مورد؛ از طریق `memory-outbox.test` **و** `pg/outbox-contract.pg.test` بی‌تغییر) · `durable-ledger` · `sweeper` · `durable-gateway.integration` (حافظه‌ای و PostgreSQL؛ شکافِ ۰۰۲۰، مرگِ واقعیِ تماس، ۳۰ تماس موازی) · `settlement.property` (۴۰ بذر + ۴ بذر PostgreSQL + ادعای پوشش) · `purity`. آداپتور PostgreSQL (`pg/`): `unit` (بی‌پایگاه) · `guard` (نگهبان منبع) · `schema.pg` (قیدها، TRIGGERها، ایندکس‌ها، مهاجرت) · `concurrency.pg` (چندفرایندی) · `differential.pg` (حافظه‌ای ⇄ PostgreSQL) · `durability.pg` (مرگِ واقعیِ فرایند، اتمی‌بودن). جهشی: `python3 tooling/mutation/settlement.py` و `python3 tooling/mutation/settlement-pg.py`.

@@ -2,7 +2,7 @@
  * settlement — سیاستِ خالصِ حلقهٔ رفتگر (ADR-0023): تأخیرِ گذر بعد و اعتبارسنجیِ گزارشِ رفتگر.
  * بی‌زمان و بی‌حالت: همهٔ ورودی‌ها آرگومان‌اند تا با آزمون خاصیتی سنجیده شوند.
  */
-import type { BuriedItem, DeadReason, LoopFaultKind, SweepReport } from "./types";
+import type { BuriedItem, DeadLetter, DeadReason, LoopFaultKind, ReservationRef, SweepReport } from "./types";
 
 export type DelayPolicy = Readonly<{ intervalMs: number; maxBackoffMs: number; maxDrainRuns: number }>;
 export type RunOutcome = "unhealthy" | "progress" | "idle";
@@ -63,6 +63,48 @@ export function parseReport(raw: unknown): SweepReport | null {
       items.push(item);
     }
     return Object.freeze({ examined, settled, retryLater, raced, outboxFailures, buried: Object.freeze(items), listFailed });
+  } catch {
+    return null;
+  }
+}
+
+// ───────────────────────── م۳‑د‑۲: زنگِ ماندگار (ADR-0026) ─────────────────────────
+
+export type ParsedDeadLetter = Readonly<{ ref: ReservationRef; key: string; letter: DeadLetter }>;
+
+/** کلیدِ یکتای رکورد (JSON، تا جداکننده در شناسه‌ها اشتباه نشود). */
+export const deadKey = (r: ReservationRef): string => JSON.stringify([r.tenantId, r.accountId, r.reservationId]);
+
+const isTime = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+
+function parseDeadEntry(raw: unknown): ParsedDeadLetter | null {
+  if (!isRecord(raw)) return null;
+  const { tenantId, accountId, reservationId, unit, reserved, state, deadReason, lastErrorCode, attempts, settledAtMs } = raw;
+  if (!isShort(tenantId) || !isShort(accountId) || !isShort(reservationId) || !isShort(unit)) return null;
+  if (state !== "dead" || typeof deadReason !== "string" || !REASONS.has(deadReason)) return null;
+  if (!isCount(reserved) || !isCount(attempts)) return null;
+  if (lastErrorCode !== null && !isShort(lastErrorCode)) return null;
+  if (settledAtMs !== null && !isTime(settledAtMs)) return null;
+  const ref: ReservationRef = Object.freeze({ tenantId, accountId, reservationId });
+  const letter: DeadLetter = Object.freeze({ tenantId, accountId, reservationId, unit, reserved, reason: deadReason as DeadReason, errorCode: lastErrorCode, attempts, deadAtMs: settledAtMs });
+  return Object.freeze({ ref, key: deadKey(ref), letter });
+}
+
+/**
+ * خروجیِ `listUnacknowledgedDead` را باور نمی‌کند: آرایه‌ای حداکثر `maxItems` عضوی از رکوردهای `dead` با شناسه و عددهای معتبر؛
+ * هر انحراف ⇒ `null` (کلِ فهرست رد می‌شود، نه نیمی از آن: outbox خراب است و نباید روی فهرستش تأیید ثبت کرد).
+ * نتیجه کپیِ منجمدِ فقط فیلدهای شناخته‌شده است (پیامِ خام هرگز به `deliver` نمی‌رسد).
+ */
+export function parseDeadList(raw: unknown, maxItems: number): readonly ParsedDeadLetter[] | null {
+  try {
+    if (!Array.isArray(raw) || raw.length > maxItems) return null;
+    const out: ParsedDeadLetter[] = [];
+    for (const e of raw as readonly unknown[]) {
+      const p = parseDeadEntry(e);
+      if (p === null) return null;
+      out.push(p);
+    }
+    return Object.freeze(out);
   } catch {
     return null;
   }

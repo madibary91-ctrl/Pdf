@@ -165,8 +165,20 @@ export type LoopTimer = Readonly<{ after(fn: () => void, ms: number): unknown; c
  * - `LIST_FAILED`: فهرستِ سررسیدها خوانده نشد (outbox یا ساعت در دسترس نیست).
  * - `OUTBOX_FAILURES`: دست‌کم یک رکورد به‌خاطر خطای outbox بسته نشد.
  * - `SCHEDULE_FAILED`: زمان‌سنج نتوانست گذر بعد را بسازد؛ حلقه از کار افتاد (`stalled`) و باید از بیرون دوباره `start` شود.
+ * م۳‑د‑۲ (ADR-0026، فقط با `deadLetters`):
+ * - `DEAD_LIST_FAILED`: فهرستِ مرده‌های تأییدنشده خوانده نشد یا شکلِ نامعتبر داشت (outbox خراب است).
+ * - `DEAD_DELIVER_FAILED`: `deliver` برای دست‌کم یک رکورد پرتاب/رد شد یا مهلتش گذشت (یا زمان‌سنجِ مهلت ساخته نشد)؛ تأیید نمی‌شود و گذر بعد دوباره می‌رسد.
+ * - `DEAD_ACK_FAILED`: زنگ رسید ولی تأیید ثبت نشد (خطای outbox یا ساعتِ نامعتبر)؛ زنگ در گذر بعد **دوباره** می‌رسد (تحویلِ دست‌کم‌یک‌بار).
  */
-export type LoopFaultKind = "SWEEP_THREW" | "BAD_REPORT" | "LIST_FAILED" | "OUTBOX_FAILURES" | "SCHEDULE_FAILED";
+export type LoopFaultKind =
+  | "SWEEP_THREW"
+  | "BAD_REPORT"
+  | "LIST_FAILED"
+  | "OUTBOX_FAILURES"
+  | "SCHEDULE_FAILED"
+  | "DEAD_LIST_FAILED"
+  | "DEAD_DELIVER_FAILED"
+  | "DEAD_ACK_FAILED";
 
 export type LoopFault = Readonly<{
   kind: LoopFaultKind;
@@ -195,6 +207,57 @@ export type SweepObserver = Readonly<{
   onFault?(fault: LoopFault): unknown;
 }>;
 
+/**
+ * م۳‑د‑۲ (ADR-0026): زنگِ ماندگارِ مرده‌ها. فقط شناسه و عددهای مالیِ رکورد؛ هرگز پیامِ خام، کلید یا متنِ کاربر.
+ * کپیِ منجمدِ حلقه است (دستکاریِ `deliver` اثری روی حلقه/outbox ندارد).
+ */
+export type DeadLetter = Readonly<{
+  tenantId: string;
+  accountId: string;
+  reservationId: string;
+  unit: string;
+  /** مبلغِ رزروشدهٔ رکورد (آنچه رسیدگیِ مالی باید بسنجد). */
+  reserved: number;
+  reason: DeadReason;
+  errorCode: string | null;
+  attempts: number;
+  /** زمانِ مرگ (ثبت‌شدهٔ outbox)؛ `null` اگر outbox نداده باشد. */
+  deadAtMs: number | null;
+}>;
+
+/** بخشی از پورتِ outbox که زنگِ ماندگار لازم دارد (ADR-0025). */
+export type DeadLetterOutbox = Pick<SettlementOutbox, "listUnacknowledgedDead" | "acknowledgeDead">;
+
+/**
+ * زنگِ ماندگار (ADR-0026). حلقه در هر گذر (از جمله نخستین گذر پس از `start`، پس هر ریستارت) مرده‌های **تأییدنشده** را از outbox می‌خواند،
+ * هر کدام را به `deliver` می‌دهد و **فقط پس از موفقیتِ `deliver`** تأیید می‌کند. `deliver` برخلافِ مشاهده‌گرها **await می‌شود** (با مهلت).
+ * ضمانت: تحویلِ دست‌کم‌یک‌بار ⇒ `deliver` باید idempotent باشد (مثلاً کلیدِ `(tenantId, accountId, reservationId)`).
+ */
+export type DeadLetterDelivery = Readonly<{
+  outbox: DeadLetterOutbox;
+  /** resolve ⇒ رسید و تأیید می‌شود؛ پرتاب/رد/مهلت ⇒ تأیید نمی‌شود و گذر بعد دوباره می‌آید. */
+  deliver(letter: DeadLetter): unknown;
+  /** حداکثر رکورد در هر دسته (۱…۱۰۰۰). پیش‌فرض ۵۰. */
+  batchLimit?: number;
+  /** حداکثر دسته در هر گذر (۱…۱۰۰). پیش‌فرض ۵. دسته‌ی پر در پایانِ سقف ⇒ گذرِ بعد بی‌انتظار (تخلیه). */
+  maxBatchesPerRun?: number;
+  /** مهلتِ هر `deliver` (۱…۳٬۶۰۰٬۰۰۰). پیش‌فرض ۳۰٬۰۰۰. گذشتنِ مهلت = شکستِ همان رکورد، نه آویزان‌شدنِ حلقه. */
+  deliverTimeoutMs?: number;
+}>;
+
+export type DeadLetterStats = Readonly<{
+  enabled: boolean;
+  /** `deliver`هایی که موفق شدند. */
+  delivered: number;
+  /** تأییدهایی که ثبت شدند (تکراریِ `replayed` هم می‌شمارد؛ رکورد در هر صورت تأییدشده است). */
+  acknowledged: number;
+  deliverFailures: number;
+  ackFailures: number;
+  listFailures: number;
+  /** ساعتِ آخرین تأییدِ موفق؛ برای پایش. */
+  lastAckAtMs: number | null;
+}>;
+
 export type SweepLoopConfig = Readonly<{
   /** رفتگر ساخته‌شده (`createSettlementSweeper`). */
   sweeper: Sweeper;
@@ -211,6 +274,8 @@ export type SweepLoopConfig = Readonly<{
   /** حداکثر انتظار `stop()` برای گذرِ در حال اجرا (۱…۳٬۶۰۰٬۰۰۰). پیش‌فرض ۳۰٬۰۰۰. */
   stopTimeoutMs?: number;
   observer?: SweepObserver;
+  /** اختیاری؛ بدونِ آن رفتار دقیقاً مثلِ ADR-0023 است (زنگ فقط درون‌حافظه‌ای). */
+  deadLetters?: DeadLetterDelivery;
 }>;
 
 export type LoopState = "stopped" | "running" | "stopping" | "stalled";
@@ -226,6 +291,8 @@ export type SweepLoopStatus = Readonly<{
   lastSuccessAtMs: number | null;
   lastFault: LoopFaultKind | null;
   totals: Readonly<{ examined: number; settled: number; retryLater: number; raced: number; outboxFailures: number; buried: number; faults: number; observerFailures: number }>;
+  /** م۳‑د‑۲: شمارنده‌های زنگِ ماندگار (بی‌پیکربندیِ `deadLetters`: `enabled:false` و صفرها). */
+  deadLetters: DeadLetterStats;
 }>;
 
 export type LoopStartResult = Readonly<{ started: true }> | Readonly<{ started: false; reason: "ALREADY_RUNNING" | "PREVIOUS_RUN_ACTIVE" | "SCHEDULE_FAILED" }>;

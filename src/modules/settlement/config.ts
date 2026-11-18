@@ -4,7 +4,7 @@
 import { LIMITS } from "@/modules/ledger";
 import type { Clock, CloseRemainder, Ledger } from "@/modules/ledger";
 import { isDecoratedLedger } from "./decorated";
-import type { DurableLedgerConfig, LoopTimer, SettlementConfigError, SettlementOutbox, SettlementResult, SweepLoopConfig, SweepObserver, Sweeper, SweeperConfig } from "./types";
+import type { DeadLetter, DeadLetterOutbox, DurableLedgerConfig, LoopTimer, SettlementConfigError, SettlementOutbox, SettlementResult, SweepLoopConfig, SweepObserver, Sweeper, SweeperConfig } from "./types";
 
 export const SETTLEMENT_LIMITS = Object.freeze({
   maxGraceMs: LIMITS.MAX_TTL_MS / 2,
@@ -18,6 +18,12 @@ export const SETTLEMENT_LIMITS = Object.freeze({
   maxMaxDrainRuns: 1000,
   defaultStopTimeoutMs: 30_000,
   maxStopTimeoutMs: 3_600_000,
+  defaultDeadBatchLimit: 50,
+  maxDeadBatchLimit: 1000,
+  defaultDeadBatchesPerRun: 5,
+  maxDeadBatchesPerRun: 100,
+  defaultDeliverTimeoutMs: 30_000,
+  maxDeliverTimeoutMs: 3_600_000,
 });
 
 const OUTBOX_METHODS = ["begin", "recordCharge", "recordClose", "resolveClose", "finish", "recordFailure", "bury", "get", "listDue", "listDead", "counts"] as const;
@@ -92,6 +98,42 @@ export function resolveSweeperConfig(raw: unknown): SettlementResult<ResolvedSwe
   }
 }
 
+export type ResolvedDeadLetters = Readonly<{
+  outbox: DeadLetterOutbox;
+  deliver: (letter: DeadLetter) => unknown;
+  batchLimit: number;
+  maxBatchesPerRun: number;
+  deliverTimeoutMs: number;
+}>;
+
+const DEAD_LETTER_KEYS = new Set(["outbox", "deliver", "batchLimit", "maxBatchesPerRun", "deliverTimeoutMs"]);
+
+/** `deadLetters` (ADR-0026): اختیاری؛ `undefined` ⇒ `null`. مشکل‌ها فقط نامِ فیلدند. */
+function resolveDeadLetters(raw: unknown, issues: string[]): ResolvedDeadLetters | null {
+  if (raw === undefined) return null;
+  if (!isRecord(raw)) {
+    issues.push("deadLetters باید شیء ساده باشد.");
+    return null;
+  }
+  for (const k of Object.keys(raw)) if (!DEAD_LETTER_KEYS.has(k)) issues.push(`کلید ناشناختهٔ deadLetters: ${JSON.stringify(k.slice(0, 40))}.`);
+  if (!hasFns(raw["outbox"], ["listUnacknowledgedDead", "acknowledgeDead"])) issues.push("deadLetters.outbox باید listUnacknowledgedDead و acknowledgeDead داشته باشد.");
+  if (typeof raw["deliver"] !== "function") issues.push("deadLetters.deliver الزامی است و باید تابع باشد.");
+  const batchLimit = raw["batchLimit"] ?? SETTLEMENT_LIMITS.defaultDeadBatchLimit;
+  const batches = raw["maxBatchesPerRun"] ?? SETTLEMENT_LIMITS.defaultDeadBatchesPerRun;
+  const timeout = raw["deliverTimeoutMs"] ?? SETTLEMENT_LIMITS.defaultDeliverTimeoutMs;
+  if (!isIntIn(batchLimit, 1, SETTLEMENT_LIMITS.maxDeadBatchLimit)) issues.push(`deadLetters.batchLimit باید صحیح ۱ تا ${SETTLEMENT_LIMITS.maxDeadBatchLimit} باشد.`);
+  if (!isIntIn(batches, 1, SETTLEMENT_LIMITS.maxDeadBatchesPerRun)) issues.push(`deadLetters.maxBatchesPerRun باید صحیح ۱ تا ${SETTLEMENT_LIMITS.maxDeadBatchesPerRun} باشد.`);
+  if (!isIntIn(timeout, 1, SETTLEMENT_LIMITS.maxDeliverTimeoutMs)) issues.push(`deadLetters.deliverTimeoutMs باید صحیح ۱ تا ${SETTLEMENT_LIMITS.maxDeliverTimeoutMs} باشد.`);
+  if (issues.length > 0) return null;
+  return Object.freeze({
+    outbox: raw["outbox"] as DeadLetterOutbox,
+    deliver: raw["deliver"] as (letter: DeadLetter) => unknown,
+    batchLimit: batchLimit as number,
+    maxBatchesPerRun: batches as number,
+    deliverTimeoutMs: timeout as number,
+  });
+}
+
 export type ResolvedSweepLoopConfig = Readonly<{
   sweeper: Sweeper;
   timer: LoopTimer;
@@ -102,6 +144,7 @@ export type ResolvedSweepLoopConfig = Readonly<{
   maxDrainRuns: number;
   stopTimeoutMs: number;
   observer: SweepObserver | null;
+  deadLetters: ResolvedDeadLetters | null;
 }>;
 
 const OBSERVER_KEYS = ["onReport", "onBuried", "onFault"] as const;
@@ -114,7 +157,7 @@ export function resolveSweepLoopConfig(raw: unknown): SettlementResult<ResolvedS
   const issues: string[] = [];
   try {
     if (!isRecord(raw)) return configError(["پیکربندی باید یک شیء ساده باشد."]);
-    const allowed = new Set(["sweeper", "timer", "clock", "graceMs", "intervalMs", "maxBackoffMs", "maxDrainRuns", "stopTimeoutMs", "observer"]);
+    const allowed = new Set(["sweeper", "timer", "clock", "graceMs", "intervalMs", "maxBackoffMs", "maxDrainRuns", "stopTimeoutMs", "observer", "deadLetters"]);
     for (const k of Object.keys(raw)) if (!allowed.has(k)) issues.push(`کلید ناشناخته: ${JSON.stringify(k.slice(0, 40))}.`);
     if (!hasFns(raw["sweeper"], ["sweep"])) issues.push("sweeper باید sweep داشته باشد (createSettlementSweeper).");
     if (!hasFns(raw["timer"], ["after", "cancel"])) issues.push("timer الزامی است و باید after و cancel داشته باشد.");
@@ -140,6 +183,7 @@ export function resolveSweepLoopConfig(raw: unknown): SettlementResult<ResolvedS
         for (const k of OBSERVER_KEYS) if (observer[k] !== undefined && typeof observer[k] !== "function") issues.push(`observer.${k} باید تابع باشد.`);
       }
     }
+    const deadLetters = resolveDeadLetters(raw["deadLetters"], issues);
     if (issues.length > 0) return configError(issues);
     return {
       ok: true,
@@ -153,6 +197,7 @@ export function resolveSweepLoopConfig(raw: unknown): SettlementResult<ResolvedS
         maxDrainRuns: drain as number,
         stopTimeoutMs: stopTimeout as number,
         observer: observer === undefined ? null : (observer as SweepObserver),
+        deadLetters,
       }),
     };
   } catch {
