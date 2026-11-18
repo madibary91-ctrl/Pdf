@@ -156,7 +156,10 @@ describe("pre-push: اجرای واقعی هوک با دروازهٔ جایگز�
     expect(prePush({ STUB_EXIT: "127" }).code).toBe(1);
     const killed = prePush({ STUB_SIGNAL: "SIGKILL" });
     expect(killed.code).toBe(1);
-    expect(killed.out).toContain("SIGKILL");
+    // POSIX: اجراگر با سیگنال می‌میرد و پیام نامش را می‌آورد. ویندوز سیگنال ندارد: `process.kill(pid, "SIGKILL")` با TerminateProcess(…, 1)
+    // تمام می‌شود، یعنی کد خروج ۱ و بی‌`signal`؛ پیام همان مسیر «کد غیرصفر» است. در هر دو، مسدودشدن (کد ۱ بالا) همان است.
+    if (process.platform === "win32") expect(killed.out).toMatch(/با کد (?!0\b)\d+ پایان یافت/);
+    else expect(killed.out).toContain("SIGKILL");
   });
 
   it("تسامحِ پایگاه، بررسی‌های دیگرِ پوش را دور نمی‌زند: درخت کثیف همچنان رد می‌شود", () => {
