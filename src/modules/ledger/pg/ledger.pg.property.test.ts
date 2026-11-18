@@ -4,7 +4,7 @@
  * و در پایان `audit` سالم است. هر بذر یک مستأجر مستقل است.
  * «ادعای پوشش» در پایان: همهٔ نوع‌های موفقیت، بازتکرار و کدهای خطای اصلی واقعاً دیده شده‌اند (تا آزمون تهی نباشد).
  */
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMemoryStore } from "../memory-store";
 import type { AccountKey, AccountState, Ledger, LedgerResult } from "../types";
 import { UNIT, mutableClock, prng, setup } from "../test-kit";
@@ -65,15 +65,17 @@ const bump = (m: Map<string, number>, k: string): void => void m.set(k, (m.get(k
 
 dbDescribe("ledger/pg · آزمون خاصیتی: PostgreSQL ≡ ذخیرهٔ حافظه‌ای (موتور واقعی)", () => {
   let t: TestLedgerDb;
-  const ready = openTestLedgerDb().then((x) => (t = x));
+  // باز کردن در beforeAll (نه هنگام جمع‌آوری): `describe.skip` بدنه‌اش را اجرا می‌کند ولی hook‌هایش را نه؛ باز کردنِ زودهنگام بدون پایگاه
+  // یک promise ردشدهٔ بی‌دستگیره می‌ساخت (Unhandled Rejection).
+  beforeAll(async () => {
+    t = await openTestLedgerDb();
+  });
   afterAll(async () => {
-    await ready;
-    await t.drop();
+    await t?.drop();
   });
 
   for (let seed = 1; seed <= SEEDS; seed++) {
     it(`بذر ${seed}: ${OPS} عملیات تصادفی/خصمانه`, async () => {
-      await ready;
       const r = prng(seed * 7919);
       const tenantId = `s${seed}`;
       const clock = mutableClock();
