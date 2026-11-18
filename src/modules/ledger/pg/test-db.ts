@@ -49,7 +49,7 @@ export type OpenOptions = Readonly<{
 export async function openTestLedgerDb(options: OpenOptions = {}): Promise<TestLedgerDb> {
   if (!HAS_DB) throw new Error("پایگاه آزمون تنظیم نشده است (KB_TEST_DATABASE_URL یا DATABASE_URL).");
   const schema = `ledger_test_${randomBytes(5).toString("hex")}`;
-  const pool = new Pool({ connectionString: TEST_DB_URL, max: options.poolSize ?? 10 });
+  const pool = new Pool({ connectionString: TEST_DB_URL, max: options.poolSize ?? 10, idleTimeoutMillis: 50 }); // بودجهٔ اتصال: ADR-0024
   const db = drizzle(pool);
   const semantic = options.semanticGuards ?? true;
   const store = buildPgStore(db, schema, semantic);
