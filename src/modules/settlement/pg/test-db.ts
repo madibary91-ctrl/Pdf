@@ -3,6 +3,11 @@
  * (`settlement_test_<تصادفی>`) می‌سازد و در پایان `DROP SCHEMA … CASCADE` می‌کند؛ به `public` یا شِمای واقعی `settlement`/`ledger` دست نمی‌زند.
  * `reopen()` «ریستارتِ فرایند» را شبیه‌سازی می‌کند: استخرِ اتصالِ تازه و نمونهٔ تازه روی همان شِما (بی‌مهاجرتِ دوباره).
  * بدون `KB_TEST_DATABASE_URL`/`DATABASE_URL` تست‌ها رد می‌شوند (CI را `ledger/pg/guard.test.ts` و دروازهٔ صفر-رد قرمز می‌کنند).
+ *
+ * بودجهٔ اتصال (ADR-0024): سرور PostgreSQL سقفِ اتصال دارد (`max_connections`، پیش‌فرض ۱۰۰) و Vitest فایل‌ها را موازی اجرا می‌کند.
+ * استخرِ بیکار اتصال‌هایش را تا ۱۰ ثانیه نگه می‌داشت؛ آزمونی که استخرهایش را تا `afterAll` باز می‌گذارد (مثلِ آزمون تفاضلی: ۲۴ بذر × ۴ اتصال)
+ * تا ۹۶ اتصال را نگه می‌داشت و هر فایلِ هم‌زمانِ دیگر `53300 too many clients` می‌گرفت (آداپتور درست و عمداً آن را `STORE_FAILURE` می‌کند).
+ * پس استخرِ آزمون اتصالِ بیکار را زود پس می‌دهد (`TEST_POOL_IDLE_MS`) و هر اتصال برچسبِ `application_name` دارد تا سهمِ همین فرایند سنجیدنی باشد.
  */
 import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
@@ -14,6 +19,23 @@ import { createPgSettlementOutbox } from "./store";
 import type { PgSettlementOutbox } from "./types";
 
 export { HAS_DB, TEST_DB_URL, dbDescribe };
+
+/** مهلتِ بیکاریِ اتصال در استخرهای آزمون (میلی‌ثانیه): کوتاه، تا استخرِ بازمانده تا `afterAll` اتصالِ بیکار را نگه نداشته باشد. */
+export const TEST_POOL_IDLE_MS = 50;
+/** برچسبِ یکتای این فرایندِ آزمون روی هر اتصال (`pg_stat_activity.application_name`)؛ هر فایلِ آزمون جداگانه ایزوله است. */
+export const TEST_APP_NAME = `settlement-test-${process.pid}-${randomBytes(3).toString("hex")}`;
+
+/** شمارِ اتصال‌های زندهٔ همین فرایندِ آزمون روی سرور (با اتصالِ کوتاه‌عمرِ جدا که خودش شمرده نمی‌شود). */
+export async function countOwnConnections(): Promise<number> {
+  if (!HAS_DB) throw new Error("پایگاه آزمون تنظیم نشده است (KB_TEST_DATABASE_URL یا DATABASE_URL).");
+  const probe = new Pool({ connectionString: TEST_DB_URL, max: 1 });
+  try {
+    const res = await probe.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1", [TEST_APP_NAME]);
+    return Number((res.rows[0] as { n: number }).n);
+  } finally {
+    await probe.end();
+  }
+}
 
 export type TestOutbox = Readonly<{
   outbox: PgSettlementOutbox;
@@ -37,7 +59,7 @@ export async function openPgOutbox(poolSize = 10, schema = newSchemaName(), migr
   if (!HAS_DB) throw new Error("پایگاه آزمون تنظیم نشده است (KB_TEST_DATABASE_URL یا DATABASE_URL).");
   const pools: Pool[] = [];
   const open = (): { pool: Pool; db: LedgerDatabase; outbox: PgSettlementOutbox } => {
-    const pool = new Pool({ connectionString: TEST_DB_URL, max: poolSize });
+    const pool = new Pool({ connectionString: TEST_DB_URL, max: poolSize, idleTimeoutMillis: TEST_POOL_IDLE_MS, application_name: TEST_APP_NAME });
     pools.push(pool);
     const db = drizzle(pool);
     const made = createPgSettlementOutbox(db, { schema });
