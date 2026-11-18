@@ -55,6 +55,8 @@ export type OutboxError = Readonly<{ code: OutboxErrorCode; message: string }>;
 export type OutboxResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; error: OutboxError }>;
 
 export type Replayed = Readonly<{ replayed: boolean }>;
+/** تأییدِ رسیدگی به رکوردِ مرده؛ `atMs` را فراخواننده می‌دهد (outbox ساعت ندارد) و فقط فراداده است، نه تصمیم. */
+export type DeadAck = Readonly<{ atMs: number }>;
 export type OutboxCounts = Readonly<Record<EntryState, number>>;
 export type DueQuery = Readonly<{ nowMs: number; limit: number }>;
 
@@ -87,6 +89,17 @@ export type SettlementOutbox = Readonly<{
   listDue(query: DueQuery): Promise<OutboxResult<readonly OutboxEntry[]>>;
   /** مرده‌ها به ترتیب (زمان مرگ، شناسه) برای رسیدگی عملیاتی. */
   listDead(query: Readonly<{ limit: number }>): Promise<OutboxResult<readonly OutboxEntry[]>>;
+  /**
+   * م۳‑د (ADR-0025): مرده‌هایی که **هنوز تأیید رسیدگی نشده‌اند**، به ترتیبِ `listDead` (زمان مرگ، شناسه)، حداکثر `limit` (۱…۱۰۰۰).
+   * تأیید فهرستِ `listDead` را تغییر نمی‌دهد (تاریخچه کامل می‌ماند)؛ فقط از این فهرست بیرون می‌برد. زنگِ عملیاتی از همین فهرست می‌خواند:
+   * اگر فرایند پیش از رسیدنِ زنگ بمیرد، رکورد همچنان این‌جا می‌ماند (تحویلِ دست‌کم‌یک‌بار، نه «حداکثر یک بار» که زنگ را گم می‌کرد).
+   */
+  listUnacknowledgedDead(query: Readonly<{ limit: number }>): Promise<OutboxResult<readonly OutboxEntry[]>>;
+  /**
+   * ثبتِ «رسیدگی/اعلام شد» برای یک رکوردِ `dead`؛ نوشتن‌یک‌بار: **اولین تأیید برنده است** و تکرار (حتی با `atMs` دیگر) ⇒ `replayed`.
+   * بی‌رکورد ⇒ `NOT_FOUND`؛ رکوردِ غیرمرده (`open`/`settling`/`done`) ⇒ `CONFLICT` (فقط مرده تأیید می‌شود) و رکورد دست‌نخورده می‌ماند.
+   */
+  acknowledgeDead(ref: ReservationRef, ack: DeadAck): Promise<OutboxResult<Replayed>>;
   counts(): Promise<OutboxResult<OutboxCounts>>;
 }>;
 

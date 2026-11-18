@@ -83,5 +83,19 @@ loop.status();                    // state، busy، lastSuccessAtMs، consecutiv
 - **زیرِ ردِ اتصال یا قطعِ پس از commit** (نتیجهٔ مبهم): همه‌چیز `STORE_FAILURE`ِ ثابت و بی‌نشت است، چیزی نیمه‌نوشته نمی‌ماند و تکرارِ فراخوان برای `begin/recordCharge/recordClose/resolveClose/finish/bury` ایمن و هم‌ارزِ مدلِ مرجع است (آزموده با PostgreSQL واقعی).
 - ⚠️ **`recordFailure` تکرارپذیر نیست** (`attempts+1`): تکرار پس از قطعِ مبهم شمارنده را دوبار می‌افزاید. استخرِ برنامه (`src/db/index.ts`) هم `connectionTimeoutMillis` ندارد؛ هر دو در تحویل ۰۰۲۴ برای تصمیمِ مالک ثبت شده‌اند.
 
+## تأییدِ ماندگارِ رسیدگی به مرده‌ها (م۳‑د‑۱، ADR-0025)
+```ts
+const pending = await outbox.listUnacknowledgedDead({ limit: 100 }); // ترتیبِ (زمان مرگ، شناسه)
+for (const e of pending.ok ? pending.value : []) {
+  await page(e);                                                      // اعلامِ عملیاتی (ممکن است تکراری برسد)
+  await outbox.acknowledgeDead(e, { atMs: clock.nowMs() });           // ماندگار؛ تکرار ⇒ replayed
+}
+```
+- **تحویلِ دست‌کم‌یک‌بار:** تا تأیید ثبت نشده رکورد در فهرست می‌ماند؛ مرگِ فرایند میانِ «فهرست» و «تأیید» زنگ را گم نمی‌کند، فقط ممکن است تکراری برسد.
+- تأیید **نوشتن‌یک‌بار** است (اولین `atMs` می‌ماند؛ تکرار با هر زمانی `replayed:true`)، فقط برای `dead` (غیرمرده ⇒ `CONFLICT`، بی‌رکورد ⇒ `NOT_FOUND`) و `listDead`/`get`/`counts` را عوض نمی‌کند.
+- PostgreSQL: مهاجرتِ افزایشیِ `0002_dead_ack` جدولِ `settlement_dead_ack` را می‌سازد (**پیش از استفاده `migrate()`**؛ تا آن‌گاه همهٔ عملیات `STORE_FAILURE` است). مرده‌های پیش از ارتقا «تأییدنشده»‌اند. جدولِ outbox و TRIGGERهایش دست‌نخورده‌اند.
+- ⚠️ **هنوز هیچ‌کس این‌ها را صدا نمی‌زند:** `createSweepLoop`/`onBuried` به آن‌ها سیم‌کشی نشده‌اند (م۳‑د‑۲). `onBuried`ِ حلقه همچنان در حافظه است و با مرگِ فرایند گم می‌شود، تا آن برش.
+
 ## آزمون‌ها
 حلقه (م۳‑ج): `loop-policy` (۶۱ مورد؛ جدول + خاصیتی با مرجعِ مستقل + اعتبارسنجیِ گزارش) · `sweep-loop` (پیکربندی، چرخهٔ عمر، تک‌پروازی، عقب‌نشینی، تخلیه، مشاهده‌گر، خرابیِ زمان‌سنج/ساعت/رفتگر) · `sweep-loop.integration` (دفتر و outbox واقعی، ۳۰+۲۰ بذر) · `sweep-loop.pg` (مرگِ فرایند، دو حلقه، قطعِ پایگاه). `outbox-contract` (۴۳ مورد؛ از طریق `memory-outbox.test` **و** `pg/outbox-contract.pg.test` بی‌تغییر) · `durable-ledger` · `sweeper` · `durable-gateway.integration` (حافظه‌ای و PostgreSQL؛ شکافِ ۰۰۲۰، مرگِ واقعیِ تماس، ۳۰ تماس موازی) · `settlement.property` (۴۰ بذر + ۴ بذر PostgreSQL + ادعای پوشش) · `purity`. آداپتور PostgreSQL (`pg/`): `unit` (بی‌پایگاه) · `guard` (نگهبان منبع) · `schema.pg` (قیدها، TRIGGERها، ایندکس‌ها، مهاجرت) · `concurrency.pg` (چندفرایندی) · `differential.pg` (حافظه‌ای ⇄ PostgreSQL) · `durability.pg` (مرگِ واقعیِ فرایند، اتمی‌بودن). جهشی: `python3 tooling/mutation/settlement.py` و `python3 tooling/mutation/settlement-pg.py`.
+تأییدِ مرده‌ها (م۳‑د‑۱): قراردادِ مشترکِ `contract/dead-ack-contract.ts` (۱۷ مورد؛ روی حافظه‌ای و PostgreSQL بی‌تغییر) · `memory-dead-ack.test.ts` (خاصیتی: ۳۰ بذر × ۲۲۰ گام در برابر مدلِ مرجع) · `pg/dead-ack.unit.test.ts` (۱۰ مورد بی‌پایگاه: مرز، خرابی، شکلِ SQL، قفلِ checksum مهاجرتِ 0002) · `pg/dead-ack.pg.test.ts` (ناورداهای پایگاه با SQL خام، ریستارت، **ارتقا از 0001**، تفاضلیِ حافظه‌ای⇄PostgreSQL با ۱۰ بذر) · جهشی: `python3 tooling/mutation/settlement-dead-ack.py` (۳۴ جهش؛ ۳۴ کشته).

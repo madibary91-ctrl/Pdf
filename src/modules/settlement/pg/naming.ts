@@ -26,7 +26,7 @@ export function parseSchemaName(value: unknown): PgStoreResult<string> {
   return { ok: true, value };
 }
 
-export const TABLES = ["settlement_outbox", "settlement_migration_ledger"] as const;
+export const TABLES = ["settlement_outbox", "settlement_migration_ledger", "settlement_dead_ack"] as const;
 export type TableName = (typeof TABLES)[number];
 
 /** `"schema"."table"` — با نقل‌قول امن. */

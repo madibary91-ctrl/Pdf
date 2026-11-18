@@ -3,7 +3,7 @@
  * مقدارها یک‌بار خوانده می‌شوند (getter/Proxy نتواند بین اعتبارسنجی و استفاده تغییر دهد).
  */
 import { ID_RE, UNIT_RE } from "@/modules/ledger";
-import type { BeginInput, ChargeIntent, CloseIntent, DeadReason, OutboxError, OutboxErrorCode, OutboxResult, ReservationRef } from "./types";
+import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, OutboxError, OutboxErrorCode, OutboxResult, ReservationRef } from "./types";
 
 export const LIST_LIMIT_MAX = 1000;
 
@@ -107,6 +107,17 @@ export function parseListDead(raw: unknown): OutboxResult<number> {
   try {
     if (!isRecord(raw)) return invalid();
     return parseLimit(raw["limit"]);
+  } catch {
+    return invalid();
+  }
+}
+
+export function parseDeadAck(raw: unknown): OutboxResult<DeadAck> {
+  try {
+    if (!isRecord(raw)) return invalid();
+    const { atMs } = raw;
+    if (!isCount(atMs)) return invalid();
+    return { ok: true, value: Object.freeze({ atMs }) };
   } catch {
     return invalid();
   }

@@ -9,8 +9,8 @@
  */
 import { sql } from "drizzle-orm";
 import type { LedgerDatabase, LedgerExecutor, PgStoreResult } from "@/modules/ledger";
-import type { BeginInput, ChargeIntent, CloseIntent, DeadReason, OutboxEntry, OutboxResult, ReservationRef } from "../types";
-import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDue, parseFailure, parseListDead, parseRef, isCount } from "../validate";
+import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, OutboxEntry, OutboxResult, ReservationRef } from "../types";
+import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "../validate";
 import { corrupt } from "./errors";
 import { assertCurrent, migrate, migrationStatus } from "./migrate";
 import { SETTLEMENT_DEFAULT_SCHEMA, parseSchemaName, tableRef } from "./naming";
@@ -26,6 +26,7 @@ const isActive = (e: OutboxEntry): boolean => e.state === "open" || e.state === 
 
 export function buildPgOutbox(db: LedgerDatabase, schema: string): PgSettlementOutbox {
   const T = tableRef(schema, "settlement_outbox");
+  const A = tableRef(schema, "settlement_dead_ack");
 
   /** یک تراکنش با سپر مهاجرت؛ هر پرتاب (پایگاه، ردیفِ خراب) ⇒ `STORE_FAILURE` (پیام ثابت، بی‌جزئیات). */
   async function run<R>(fn: (tx: LedgerExecutor) => Promise<OutboxResult<R>>, readOnly = false): Promise<OutboxResult<R>> {
@@ -216,6 +217,41 @@ export function buildPgOutbox(db: LedgerDatabase, schema: string): PgSettlementO
           LIMIT ${limit}`);
         return ok(Object.freeze(res.rows.map(entryFromRow)));
       }, true);
+    },
+
+    listUnacknowledgedDead: (query) => {
+      const l = parseListDead(query);
+      if (!l.ok) return Promise.resolve(l);
+      const limit = l.value;
+      return run(async (tx) => {
+        // ضدپیوند با جدول تأیید؛ ترتیب و ایندکسِ جزئیِ `dead` همان `listDead` است.
+        const res = await tx.execute(sql`SELECT ${COLUMNS} FROM ${T} o
+          WHERE o.state = 'dead'
+            AND NOT EXISTS (SELECT 1 FROM ${A} a WHERE a.tenant_id = o.tenant_id AND a.account_id = o.account_id AND a.reservation_id = o.reservation_id)
+          ORDER BY o.settled_at_ms, o.tenant_id, o.account_id, o.reservation_id
+          LIMIT ${limit}`);
+        return ok(Object.freeze(res.rows.map(entryFromRow)));
+      }, true);
+    },
+
+    acknowledgeDead: (ref: ReservationRef, ack: DeadAck) => {
+      const r = parseRef(ref);
+      const a = parseDeadAck(ack);
+      if (!r.ok) return Promise.resolve(r);
+      if (!a.ok) return Promise.resolve(a);
+      const ref2 = r.value;
+      const want = a.value;
+      return run(async (tx) => {
+        // قفلِ ردیفِ رکورد (مثل بقیهٔ نوشتن‌ها): دو تأییدِ هم‌زمان سریال می‌شوند و دقیقاً یکی «تازه» است.
+        const e = await select(tx, ref2, true);
+        if (e === null) return notFound();
+        if (e.state !== "dead") return conflict("فقط رکوردِ مرده تأیید رسیدگی می‌شود.");
+        const ins = await tx.execute(sql`INSERT INTO ${A} (tenant_id, account_id, reservation_id, acked_at_ms)
+          VALUES (${ref2.tenantId}, ${ref2.accountId}, ${ref2.reservationId}, ${want.atMs})
+          ON CONFLICT (tenant_id, account_id, reservation_id) DO NOTHING
+          RETURNING 1 AS inserted`);
+        return ok({ replayed: ins.rows.length === 0 });
+      });
     },
 
     counts: () =>

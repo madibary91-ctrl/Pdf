@@ -74,7 +74,7 @@ describe("settlement/pg · نگهبان منبع", () => {
   it("هیچ جدولی جز دو جدولِ شناخته‌شده و هیچ شِمایی جز پارامتر ساخته/خوانده نمی‌شود (نام شِما فقط با sql.identifier)", () => {
     const all = sources.map((s) => s.code).join("\n");
     const tables = new Set([...all.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?\$\{[^}]+\}(?:\.(\w+))?/g)].map((m) => m[1] ?? "(ref)"));
-    expect([...tables].sort()).toEqual(["(ref)", "settlement_outbox"]);
+    expect([...tables].sort()).toEqual(["(ref)", "settlement_dead_ack", "settlement_outbox"]);
     expect(all).not.toMatch(/\bpublic\./);
     expect(all).not.toMatch(/DROP\s+(TABLE|SCHEMA)/i);
     expect(all).not.toMatch(/\bTRUNCATE\s+(TABLE\s+)?\$\{/i);

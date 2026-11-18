@@ -16,6 +16,7 @@ export type {
   ChargeIntent,
   CloseIntent,
   CloseOrigin,
+  DeadAck,
   DeadReason,
   DueQuery,
   DurableLedgerConfig,

@@ -133,7 +133,46 @@ const m0001: Migration = {
   ],
 };
 
-export const MIGRATIONS: readonly Migration[] = [m0001];
+/**
+ * 0002 — تأیید رسیدگی به رکوردهای مرده (ADR-0025). **افزایشی و بی‌دست‌زدن به جدول و TRIGGERهای 0001**:
+ * رکوردِ outbox پس از `dead` نهایی و تغییرناپذیر می‌ماند (ناوردای «نهایی‌بودن»، `settlement_outbox_guard`)؛ تأیید حقیقتی جدا و نوشتن‌یک‌بار است
+ * و در جدول خودش می‌نشیند. رکوردهای مرده‌ای که پیش از این مهاجرت وجود داشتند ردیفِ تأیید ندارند ⇒ «تأییدنشده» می‌شوند (هیچ زنگی را گم‌شده فرض نمی‌کنیم).
+ * ناوردا را خودِ پایگاه اجرا می‌کند: فقط برای رکوردِ موجودِ `dead` (TRIGGER)، بی‌ویرایش، بی‌حذف، بی‌TRUNCATE.
+ * عمداً **FOREIGN KEY ندارد**: FK جلوی `TRUNCATE` جدول مرجع را پیش از TRIGGERِ 0001 با خطای `0A000` می‌گیرد و پیامِ ناوردای «outbox هرگز TRUNCATE نمی‌شود» را عوض می‌کرد؛
+ * TRIGGERِ درج همان تضمین را می‌دهد (ردیفِ outbox باید موجود و `dead` باشد؛ `dead` نهایی است و حذف‌پذیر نیست، پس ردیفِ تأیید هرگز یتیم نمی‌شود).
+ */
+const m0002: Migration = {
+  name: "0002_dead_ack",
+  statements: [
+    `CREATE TABLE ${S}.settlement_dead_ack (
+       tenant_id ${S}.settlement_id NOT NULL,
+       account_id ${S}.settlement_id NOT NULL,
+       reservation_id ${S}.settlement_id NOT NULL,
+       acked_at_ms ${S}.settlement_count NOT NULL,
+       CONSTRAINT settlement_dead_ack_pk PRIMARY KEY (tenant_id, account_id, reservation_id)
+     )`,
+    `CREATE FUNCTION ${S}.settlement_dead_ack_guard() RETURNS trigger LANGUAGE plpgsql AS $fn$
+     BEGIN
+       IF TG_OP <> 'INSERT' THEN
+         RAISE EXCEPTION 'settlement: an acknowledgement is write-once and never deleted' USING ERRCODE = 'integrity_constraint_violation';
+       END IF;
+       IF NOT EXISTS (
+         SELECT 1 FROM ${S}.settlement_outbox o
+         WHERE o.tenant_id = NEW.tenant_id AND o.account_id = NEW.account_id AND o.reservation_id = NEW.reservation_id AND o.state = 'dead'
+       ) THEN
+         RAISE EXCEPTION 'settlement: only a dead record can be acknowledged' USING ERRCODE = 'integrity_constraint_violation';
+       END IF;
+       RETURN NEW;
+     END
+     $fn$`,
+    `CREATE TRIGGER settlement_dead_ack_guard BEFORE INSERT OR UPDATE OR DELETE ON ${S}.settlement_dead_ack
+       FOR EACH ROW EXECUTE FUNCTION ${S}.settlement_dead_ack_guard()`,
+    `CREATE TRIGGER settlement_dead_ack_no_truncate BEFORE TRUNCATE ON ${S}.settlement_dead_ack
+       FOR EACH STATEMENT EXECUTE FUNCTION ${S}.settlement_forbid_truncate()`,
+  ],
+};
+
+export const MIGRATIONS: readonly Migration[] = [m0001, m0002];
 
 /** checksum محتوای مهاجرت (نام + دستورها)؛ تغییرِ مهاجرتِ اعمال‌شده با آن شناسایی می‌شود. */
 export function migrationChecksum(m: Migration): string {

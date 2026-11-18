@@ -2,8 +2,8 @@
  * outbox حافظه‌ای (فقط آزمون/توسعه؛ با ریستارت می‌رود). مرجعِ معنایی پورت: هر پیاده‌سازی ماندگار باید همان `outbox-contract.ts` را بگذراند.
  * ساعت ندارد: همهٔ زمان‌ها را فراخواننده می‌دهد. خروجی‌ها کپیِ منجمدند (جداسازی از حالت درونی).
  */
-import type { BeginInput, ChargeIntent, CloseIntent, DeadReason, OutboxCounts, OutboxEntry, OutboxResult, ReservationRef, SettlementOutbox } from "./types";
-import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDue, parseFailure, parseListDead, parseRef, isCount } from "./validate";
+import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, OutboxCounts, OutboxEntry, OutboxResult, ReservationRef, SettlementOutbox } from "./types";
+import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "./validate";
 
 type Mutable = { -readonly [K in keyof OutboxEntry]: OutboxEntry[K] };
 
@@ -23,6 +23,8 @@ const byDeath = (a: Mutable, b: Mutable): number => (a.settledAtMs ?? 0) - (b.se
 
 export function createMemoryOutbox(): SettlementOutbox {
   const rows = new Map<string, Mutable>();
+  /** تأییدهای رسیدگی (نوشتن‌یک‌بار؛ زمانِ اولین تأیید). */
+  const acks = new Map<string, number>();
 
   /** هر پرتابِ پیش‌بینی‌نشده به `STORE_FAILURE` تبدیل می‌شود (قرارداد: بی‌پرتاب). */
   const guard = async <T>(fn: () => OutboxResult<T>): Promise<OutboxResult<T>> => {
@@ -169,6 +171,28 @@ export function createMemoryOutbox(): SettlementOutbox {
         if (!l.ok) return l;
         const dead = [...rows.values()].filter((e) => e.state === "dead").sort(byDeath);
         return ok(Object.freeze(dead.slice(0, l.value).map(view)));
+      }),
+
+    listUnacknowledgedDead: (query) =>
+      guard(() => {
+        const l = parseListDead(query);
+        if (!l.ok) return l;
+        const dead = [...rows.values()].filter((e) => e.state === "dead" && !acks.has(keyOf(e))).sort(byDeath);
+        return ok(Object.freeze(dead.slice(0, l.value).map(view)));
+      }),
+
+    acknowledgeDead: (ref: ReservationRef, ack: DeadAck) =>
+      guard(() => {
+        const r = parseRef(ref);
+        const a = parseDeadAck(ack);
+        if (!r.ok) return r;
+        if (!a.ok) return a;
+        const e = rows.get(keyOf(r.value));
+        if (e === undefined) return notFound();
+        if (e.state !== "dead") return conflict("فقط رکوردِ مرده تأیید رسیدگی می‌شود.");
+        if (acks.has(keyOf(e))) return ok({ replayed: true });
+        acks.set(keyOf(e), a.value.atMs);
+        return ok({ replayed: false });
       }),
 
     counts: () =>

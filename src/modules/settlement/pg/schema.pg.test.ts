@@ -260,18 +260,18 @@ dbDescribe("settlement/pg · قیدها و TRIGGERهای پایگاه", () => {
       const t = await openPgOutbox(4, newSchemaName(), false);
       opened.push(t);
       const before = await t.outbox.status();
-      expect(before).toEqual({ ok: true, value: { applied: [], pending: ["0001_init"] } });
-      expect(await t.outbox.migrate()).toEqual({ ok: true, value: { applied: ["0001_init"], alreadyApplied: [] } });
-      expect(await t.outbox.migrate()).toEqual({ ok: true, value: { applied: [], alreadyApplied: ["0001_init"] } });
-      expect(await t.outbox.status()).toEqual({ ok: true, value: { applied: ["0001_init"], pending: [] } });
-      const row = (await t.raw("SELECT name, checksum FROM {{s}}.settlement_migration_ledger"))[0];
-      expect(row).toEqual({ name: "0001_init", checksum: migrationChecksum(MIGRATIONS[0] as never) });
+      expect(before).toEqual({ ok: true, value: { applied: [], pending: ["0001_init", "0002_dead_ack"] } });
+      expect(await t.outbox.migrate()).toEqual({ ok: true, value: { applied: ["0001_init", "0002_dead_ack"], alreadyApplied: [] } });
+      expect(await t.outbox.migrate()).toEqual({ ok: true, value: { applied: [], alreadyApplied: ["0001_init", "0002_dead_ack"] } });
+      expect(await t.outbox.status()).toEqual({ ok: true, value: { applied: ["0001_init", "0002_dead_ack"], pending: [] } });
+      const rows = await t.raw("SELECT name, checksum FROM {{s}}.settlement_migration_ledger ORDER BY name");
+      expect(rows).toEqual(MIGRATIONS.map((m) => ({ name: m.name, checksum: migrationChecksum(m) })));
     });
 
     it("status روی شِمای ناموجود: همه معلق و چیزی نمی‌سازد (فقط‌خواندنی)", async () => {
       const t = await openPgOutbox(4, newSchemaName(), false);
       opened.push(t);
-      expect(await t.outbox.status()).toEqual({ ok: true, value: { applied: [], pending: ["0001_init"] } });
+      expect(await t.outbox.status()).toEqual({ ok: true, value: { applied: [], pending: ["0001_init", "0002_dead_ack"] } });
       expect(await t.raw("SELECT 1 FROM pg_namespace WHERE nspname = $1", [t.schema])).toHaveLength(0);
     });
 
@@ -292,9 +292,9 @@ dbDescribe("settlement/pg · قیدها و TRIGGERهای پایگاه", () => {
       opened.push(t);
       const many = await Promise.all(Array.from({ length: 8 }, async () => (await t.reopen()).outbox.migrate()));
       expect(many.every((r) => r.ok)).toBe(true);
-      expect(many.filter((r) => r.ok && r.value.applied.length === 1)).toHaveLength(1);
-      expect(many.filter((r) => r.ok && r.value.alreadyApplied.length === 1)).toHaveLength(7);
-      expect(await t.raw("SELECT count(*)::int AS n FROM {{s}}.settlement_migration_ledger")).toEqual([{ n: 1 }]);
+      expect(many.filter((r) => r.ok && r.value.applied.length === 2)).toHaveLength(1);
+      expect(many.filter((r) => r.ok && r.value.alreadyApplied.length === 2)).toHaveLength(7);
+      expect(await t.raw("SELECT count(*)::int AS n FROM {{s}}.settlement_migration_ledger")).toEqual([{ n: 2 }]);
     });
 
     it("مهاجرتِ ناقص اتمی است: خطا در دستورِ k ⇒ هیچ شِما/جدولی نمی‌ماند، و migrate بعدی سالم اعمال می‌شود", async () => {
@@ -325,18 +325,18 @@ dbDescribe("settlement/pg · قیدها و TRIGGERهای پایگاه", () => {
         expect(r, `k=${k}`).toMatchObject({ ok: false, error: { code: "DB_ERROR" } });
         expect(await t.raw("SELECT 1 FROM pg_namespace WHERE nspname = $1", [schema]), `k=${k}: شِما نباید بماند`).toHaveLength(0);
       }
-      expect(await t.outbox.migrate()).toMatchObject({ ok: true, value: { applied: ["0001_init"] } });
+      expect(await t.outbox.migrate()).toMatchObject({ ok: true, value: { applied: ["0001_init", "0002_dead_ack"] } });
     });
 
     it("سپر checksum: مهاجرتِ دست‌کاری‌شده ⇒ همهٔ عملیات، status و migrate خطا (MIGRATION_TAMPERED)؛ بازگرداندن آن را درست می‌کند", async () => {
       const t = await fresh();
-      const good = (await t.raw("SELECT checksum FROM {{s}}.settlement_migration_ledger"))[0]?.["checksum"];
+      const good = await t.raw("SELECT name, checksum FROM {{s}}.settlement_migration_ledger");
       await t.raw("UPDATE {{s}}.settlement_migration_ledger SET checksum = $1", ["0".repeat(64)]);
       expect(await t.outbox.counts()).toMatchObject({ ok: false, error: { code: "STORE_FAILURE" } });
       expect(await t.outbox.listDue({ nowMs: 1, limit: 1 })).toMatchObject({ ok: false, error: { code: "STORE_FAILURE" } });
       expect(await t.outbox.status()).toMatchObject({ ok: false, error: { code: "MIGRATION_TAMPERED" } });
       expect(await t.outbox.migrate()).toMatchObject({ ok: false, error: { code: "MIGRATION_TAMPERED" } });
-      await t.raw("UPDATE {{s}}.settlement_migration_ledger SET checksum = $1", [good]);
+      for (const g of good) await t.raw("UPDATE {{s}}.settlement_migration_ledger SET checksum = $1 WHERE name = $2", [g["checksum"], g["name"]]);
       expect(await t.outbox.counts()).toMatchObject({ ok: true });
     });
 

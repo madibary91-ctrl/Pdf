@@ -24,7 +24,7 @@ function stubDb(reply: (text: string, params: readonly unknown[]) => readonly Re
   const execute = async (query: SQL) => {
     const q = dialect.sqlToQuery(query);
     log.push({ text: q.sql, params: [...q.params] });
-    if (q.sql.includes("settlement_migration_ledger")) return { rows: [{ name: MIGRATIONS[0]?.name, checksum: migrationChecksum(MIGRATIONS[0] as never) }] };
+    if (q.sql.includes("settlement_migration_ledger")) return { rows: MIGRATIONS.map((m) => ({ name: m.name, checksum: migrationChecksum(m) })) };
     return { rows: [...reply(q.sql, q.params)] };
   };
   const db: LedgerDatabase = {
@@ -76,7 +76,7 @@ describe("settlement/pg · createPgSettlementOutbox", () => {
     }
     const made = createPgSettlementOutbox(db);
     expect(made.ok && Object.isFrozen(made.value)).toBe(true);
-    expect(made.ok && Object.keys(made.value).sort()).toEqual(["begin", "bury", "counts", "finish", "get", "listDead", "listDue", "migrate", "recordCharge", "recordClose", "recordFailure", "resolveClose", "status"]);
+    expect(made.ok && Object.keys(made.value).sort()).toEqual(["acknowledgeDead", "begin", "bury", "counts", "finish", "get", "listDead", "listDue", "listUnacknowledgedDead", "migrate", "recordCharge", "recordClose", "recordFailure", "resolveClose", "status"]);
   });
 });
 
@@ -334,7 +334,7 @@ describe("settlement/pg · رمزگشایی ردیف", () => {
 
 describe("settlement/pg · مهاجرت‌ها", () => {
   it("فهرست و checksum قفل‌شده است: مهاجرتِ اعمال‌شده هرگز ویرایش نمی‌شود (تغییر = مهاجرت تازه)", () => {
-    expect(MIGRATIONS.map((m) => m.name)).toEqual(["0001_init"]);
+    expect(MIGRATIONS.map((m) => m.name)).toEqual(["0001_init", "0002_dead_ack"]);
     expect(MIGRATIONS[0]?.statements).toHaveLength(12);
     expect(migrationChecksum(MIGRATIONS[0] as never)).toBe("83f50b96a70d576f9497a281c83c83a77dfd59faf40a6bef19847a16740de860");
   });
