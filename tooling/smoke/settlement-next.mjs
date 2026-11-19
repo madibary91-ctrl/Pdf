@@ -29,8 +29,9 @@ const tag = randomBytes(4).toString("hex");
 const L = `smk_l_${tag}`, S = `smk_s_${tag}`;
 
 async function migrate() {
-  const r = spawnSync("node", ["node_modules/vite-node/vite-node.mjs", "-c", "vitest.config.ts", "tooling/smoke/settlement-migrate.ts"], { cwd: ROOT, env: { ...process.env, SETTLEMENT_LEDGER_SCHEMA: L, SETTLEMENT_OUTBOX_SCHEMA: S }, encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`migrate failed: ${r.stdout}${r.stderr}`);
+  // CLIِ رسمی (ADR-0034، م۳‑ه‑۳‑ج) جایگزینِ ابزارِ موقتیِ tooling/smoke/settlement-migrate.ts شد.
+  const r = spawnSync("npm", ["run", "-s", "settlement:migrate", "--", "up"], { cwd: ROOT, env: { ...process.env, DATABASE_URL: DB, SETTLEMENT_LEDGER_SCHEMA: L, SETTLEMENT_OUTBOX_SCHEMA: S }, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`migrate failed (exit ${r.status}): ${r.stdout}${r.stderr}`);
 }
 async function dropSchemas() {
   const p = new pg.Pool({ connectionString: DB, max: 1 });

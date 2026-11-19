@@ -174,6 +174,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "settlement-runtime",
   "settlement-host",
   "settlement-bootstrap",
+  "settlement-migrate",
   "ai-orchestrator",
   "doc-templates-core",
   "legal-kb-ingest",
@@ -199,6 +200,7 @@ const HIGH_RISK: readonly RegExp[] = [
   new RegExp(`^src/modules/(${HIGH_RISK_MODULES.join("|")})/`),
   /^src\/modules\/registry\.ts$/,
   /^src\/instrumentation[^/]*\.ts$/, // گلوی بوتِ رفتگرِ تسویه (ADR-0033)
+  /^tooling\/cli\//, // گلوی CLIِ مهاجرتِ تسویه و حلقهٔ resolve (ADR-0034): مهاجرتِ پایگاهِ پول
   /^src\/db\//,
   /^drizzle\.config\.json$/,
   /^\.github\/workflows\//,

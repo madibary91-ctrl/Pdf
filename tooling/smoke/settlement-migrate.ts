@@ -1,7 +1,8 @@
 /**
  * مهاجرتِ صریحِ زمانِ استقرارِ شِماهای تسویه (ADR-0022/0031: `start` هرگز مهاجرت نمی‌کند). فعلاً فقط برای smoke و استقرارِ دستی؛
  * اجرا: DATABASE_URL=… SETTLEMENT_LEDGER_SCHEMA=… SETTLEMENT_OUTBOX_SCHEMA=… npx vite-node -c vitest.config.ts tooling/smoke/settlement-migrate.ts
- * (شِماها اختیاری‌اند؛ پیش‌فرضِ ماژول‌ها). CLIِ رسمی با آزمون کارِ برشِ بعدی است.
+ * (شِماها اختیاری‌اند؛ پیش‌فرضِ ماژول‌ها).
+ * **منسوخ (ADR-0034):** CLIِ رسمی و آزموده `npm run settlement:migrate -- up` جایگزینِ آن است؛ این فایل فقط تا به‌روزشدنِ README/ADRهای قدیمی (که به آن اشاره دارند) می‌ماند و برش‌های بعد حذفش می‌کنند.
  */
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
