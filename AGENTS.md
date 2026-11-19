@@ -40,7 +40,7 @@ node tooling/git-discipline.ts install   # یک‌بار پس از کلون: ف�
 - وارد کردن تعطیلات رسمی/قوانین از حافظه؛ داده‌ٔ نسخه‌دار با منبع باید باشد.
 
 ## نواحی پرریسک (بازبینی انسانی اجباری)
-فهرست کامل: `docs/high-risk-areas.md`. نمونه‌ها: `jalali-date`، `legal-calc`، `citation-verifier`، دفتر اعتبار، هویت، مهاجرت پایگاه داده.
+فهرست کامل: `docs/high-risk-areas.md`. نمونه‌ها: `jalali-date`، `legal-calc`، `citation-verifier`، دفتر اعتبار، `settlement`/`metering` (پول)، `ai-orchestrator`، هویت، مهاجرت پایگاه داده. هر ماژولِ `humanReview:true` در `registry.ts` خودکار باید این‌جا و در `HIGH_RISK_MODULES` باشد؛ آزمونِ `tooling/high-risk-registry-sync.test.ts` ناهمخوانی را قرمز می‌کند (ADR-0027).
 
 ## انضباط گیت (Git Discipline)
 

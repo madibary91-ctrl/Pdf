@@ -149,11 +149,51 @@ export function checkTagName(name: string): Violation | null {
 // ───────────────────────── مسیرهای پرریسک ─────────────────────────
 
 /**
+ * ماژول‌هایی که تغییرِ کدشان بازبینی انسانی و نقطهٔ برگشت می‌خواهد (G8)؛ منبعِ واحدِ regexِ `HIGH_RISK`.
+ * ناوردا (آزمونِ `tooling/high-risk-registry-sync.test.ts`، ADR-0027): هر ماژولِ `humanReview:true` در registry اینجا هست
+ * و هر نامِ این‌جا در registry هست و یا `humanReview:true` دارد یا در `HIGH_RISK_BEYOND_REGISTRY` با دلیل آمده.
+ * فقط نامِ ماژول (`[a-z0-9-]`)؛ بی‌escape در regex ساخته می‌شود و آزمون اعتبارِ نام‌ها را می‌سنجد.
+ */
+export const HIGH_RISK_MODULES: readonly string[] = [
+  "jalali-date",
+  "legal-calc",
+  "finance-calc",
+  "legal-kb-schema",
+  "legal-kb-store",
+  "citation-verifier",
+  "shared-types",
+  "ledger",
+  "identity",
+  "api",
+  "ocr-pipeline",
+  "desktop-db",
+  "desktop-finance",
+  // ADR-0027: شکافِ registry ⇒ regex (هر ۱۱ ماژولِ humanReview:true که بیرون مانده بودند)
+  "metering",
+  "settlement",
+  "ai-orchestrator",
+  "doc-templates-core",
+  "legal-kb-ingest",
+  "eval-set",
+  "doc-editing-tools",
+  "desktop-shell",
+  "desktop-backup",
+  "desktop-license",
+  "desktop-updater",
+];
+
+/** پرریسکِ عمداً محافظه‌کارانه‌تر از registry (`humanReview:false`)؛ هر ورودی دلیل دارد و آزمون کهنه‌شدنش را می‌گیرد. */
+export const HIGH_RISK_BEYOND_REGISTRY: Readonly<Record<string, string>> = {
+  "shared-types": "قرارداد مشترکِ همهٔ ماژول‌ها (AGENTS بند ۶)؛ تغییرش بی‌تأییدِ معماری ممنوع است.",
+  "legal-kb-store": "مهاجرتِ SQL و مسیرِ اعتماد/ممیزیِ دانش (ADR-0004، ADR-0005)؛ خرابیِ قید = استنادِ جعلی.",
+};
+
+/**
  * همسو با docs/high-risk-areas.md (آزمونِ همگامی در git-discipline.test.ts).
  * فقط کدِ غیرتست و غیرمستند: افزودن تست یا README به ناحیهٔ پرریسک تگ نمی‌خواهد.
  */
 const HIGH_RISK: readonly RegExp[] = [
-  /^src\/modules\/(jalali-date|legal-calc|finance-calc|legal-kb-schema|legal-kb-store|citation-verifier|shared-types|ledger|identity|api|ocr-pipeline|desktop-db|desktop-finance)\//,
+  new RegExp(`^src/modules/(${HIGH_RISK_MODULES.join("|")})/`),
   /^src\/modules\/registry\.ts$/,
   /^src\/db\//,
   /^drizzle\.config\.json$/,
