@@ -3,7 +3,7 @@
  * مقدارها یک‌بار خوانده می‌شوند (getter/Proxy نتواند بین اعتبارسنجی و استفاده تغییر دهد).
  */
 import { ID_RE, UNIT_RE } from "@/modules/ledger";
-import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, OutboxError, OutboxErrorCode, OutboxResult, ReservationRef } from "./types";
+import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, FailureInput, OutboxError, OutboxErrorCode, OutboxResult, ReservationRef } from "./types";
 
 export const LIST_LIMIT_MAX = 1000;
 
@@ -64,12 +64,15 @@ export function parseCloseIntent(raw: unknown): OutboxResult<CloseIntent> {
   }
 }
 
-export function parseFailure(raw: unknown): OutboxResult<Readonly<{ errorCode: string; dueAtMs: number }>> {
+export function parseFailure(raw: unknown): OutboxResult<FailureInput> {
   try {
     if (!isRecord(raw)) return invalid();
-    const { errorCode, dueAtMs } = raw;
+    const { errorCode, dueAtMs, expectedAttempts } = raw;
     if (typeof errorCode !== "string" || !ERROR_CODE_RE.test(errorCode) || !isCount(dueAtMs)) return invalid();
-    return { ok: true, value: Object.freeze({ errorCode, dueAtMs }) };
+    // `undefined` ≡ نبودن (فراخواننده‌ای که فیلد را شرطی می‌گذارد)؛ `null`/غیرعدد/منفی/اعشار/ناایمن ⇒ نامعتبر.
+    if (expectedAttempts === undefined) return { ok: true, value: Object.freeze({ errorCode, dueAtMs }) };
+    if (!isCount(expectedAttempts)) return invalid();
+    return { ok: true, value: Object.freeze({ errorCode, dueAtMs, expectedAttempts }) };
   } catch {
     return invalid();
   }

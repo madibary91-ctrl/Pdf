@@ -25,6 +25,8 @@ export type {
   DueQuery,
   DurableLedgerConfig,
   EntryState,
+  FailureInput,
+  FailureRecorded,
   OutboxCounts,
   OutboxEntry,
   OutboxError,

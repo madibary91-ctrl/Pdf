@@ -39,8 +39,11 @@ export function createSettlementSweeper(raw: unknown): SettlementResult<Sweeper>
   async function onLedgerError(e: OutboxEntry, code: string, now: number): Promise<Step> {
     if (TRANSIENT.has(code)) {
       if (e.attempts + 1 < cfg.maxAttempts) {
-        const rf = await safeOutbox(() => cfg.outbox.recordFailure(e, { errorCode: code, dueAtMs: now + cfg.retryDelayMs * (e.attempts + 1) }));
-        return rf.ok ? { kind: "retry" } : { kind: "outbox-failure" };
+        // compare-and-set (ADR-0028): `expectedAttempts` عکسِ همین رفتگر است؛ اگر رفتگرِ دیگری همین شکست را پیش‌تر ثبت کرده، دوباره نمی‌شماریم (`raced`).
+        const rf = await safeOutbox(() => cfg.outbox.recordFailure(e, { errorCode: code, dueAtMs: now + cfg.retryDelayMs * (e.attempts + 1), expectedAttempts: e.attempts }));
+        if (!rf.ok) return { kind: "outbox-failure" };
+        const recorded: unknown = rf.value; // پورتِ بیرونی؛ شکلِ ارزش را بی‌پرتاب می‌خوانیم
+        return typeof recorded === "object" && recorded !== null && (recorded as { replayed?: unknown }).replayed === true ? { kind: "raced" } : { kind: "retry" };
       }
       return bury(e, "ATTEMPTS_EXHAUSTED", code, now);
     }

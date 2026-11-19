@@ -55,6 +55,13 @@ export type OutboxError = Readonly<{ code: OutboxErrorCode; message: string }>;
 export type OutboxResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; error: OutboxError }>;
 
 export type Replayed = Readonly<{ replayed: boolean }>;
+/**
+ * ورودیِ ثبتِ شکستِ گذرا. `expectedAttempts` (اختیاری، ADR-0028): `attempts`ی که فراخواننده در عکسِ خود دیده؛ با آن ثبت تکرارپذیر می‌شود
+ * (دو رفتگرِ هم‌زمان یا تلاشِ دوبارهٔ پس از قطعِ مبهم، یک شکستِ منطقی را دوبار نمی‌شمارند).
+ */
+export type FailureInput = Readonly<{ errorCode: string; dueAtMs: number; expectedAttempts?: number }>;
+/** `replayed` فقط وقتی هست که `expectedAttempts` داده شده باشد: `true` ⇒ پیش‌تر ثبت شده بود و چیزی نوشته نشد. */
+export type FailureRecorded = Readonly<{ attempts: number; replayed?: boolean }>;
 /** تأییدِ رسیدگی به رکوردِ مرده؛ `atMs` را فراخواننده می‌دهد (outbox ساعت ندارد) و فقط فراداده است، نه تصمیم. */
 export type DeadAck = Readonly<{ atMs: number }>;
 export type OutboxCounts = Readonly<Record<EntryState, number>>;
@@ -80,8 +87,12 @@ export type SettlementOutbox = Readonly<{
   resolveClose(ref: ReservationRef): Promise<OutboxResult<OutboxEntry>>;
   /** `→done`؛ بی‌قصدِ بستن ⇒ `CONFLICT`؛ `done` ⇒ `replayed`؛ `dead` ⇒ `NOT_ACTIVE`. */
   finish(ref: ReservationRef, atMs: number): Promise<OutboxResult<Replayed>>;
-  /** شمار تلاش +۱، کد خطا و سررسید تازه؛ فقط رکورد فعال. */
-  recordFailure(ref: ReservationRef, failure: Readonly<{ errorCode: string; dueAtMs: number }>): Promise<OutboxResult<Readonly<{ attempts: number }>>>;
+  /**
+   * شمار تلاش +۱، کد خطا و سررسید تازه؛ فقط رکورد فعال.
+   * م۳‑د‑۳الف (ADR-0028): با `expectedAttempts` تکرارپذیر (compare-and-set) است؛ `attempts === expected` ⇒ ثبت (`replayed:false`)،
+   * `attempts > expected` ⇒ کسِ دیگری پیش افتاد، بی‌نوشتن (`replayed:true`)، `attempts < expected` ⇒ `CONFLICT`. بی‌آن: رفتارِ پیشین (`{attempts}`).
+   */
+  recordFailure(ref: ReservationRef, failure: FailureInput): Promise<OutboxResult<FailureRecorded>>;
   /** رکورد فعال → `dead`؛ تکرار با همان دلیل ⇒ `replayed`؛ دلیل دیگر ⇒ `CONFLICT`؛ `done` ⇒ `NOT_ACTIVE`. */
   bury(ref: ReservationRef, burial: Readonly<{ reason: DeadReason; errorCode: string | null; atMs: number }>): Promise<OutboxResult<Replayed>>;
   get(ref: ReservationRef): Promise<OutboxResult<OutboxEntry | null>>;

@@ -9,7 +9,7 @@
  */
 import { sql } from "drizzle-orm";
 import type { LedgerDatabase, LedgerExecutor, PgStoreResult } from "@/modules/ledger";
-import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, OutboxEntry, OutboxResult, ReservationRef } from "../types";
+import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, FailureInput, OutboxEntry, OutboxResult, ReservationRef } from "../types";
 import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "../validate";
 import { corrupt } from "./errors";
 import { assertCurrent, migrate, migrationStatus } from "./migrate";
@@ -150,21 +150,28 @@ export function buildPgOutbox(db: LedgerDatabase, schema: string): PgSettlementO
       });
     },
 
-    recordFailure: (ref: ReservationRef, failure: Readonly<{ errorCode: string; dueAtMs: number }>) => {
+    recordFailure: (ref: ReservationRef, failure: FailureInput) => {
       const r = parseRef(ref);
       const f = parseFailure(failure);
       if (!r.ok) return Promise.resolve(r);
       if (!f.ok) return Promise.resolve(f);
       const ref2 = r.value;
       const want = f.value;
+      const expected = want.expectedAttempts;
       return run(async (tx) => {
         const a = await lockActive(tx, ref2);
         if (!a.ok) return a;
+        if (expected !== undefined) {
+          // compare-and-set زیرِ قفلِ ردیف (ADR-0028): تصمیم و نوشتن در یک تراکنش، پس دو رفتگرِ هم‌زمان یک شکست را دوبار نمی‌شمارند.
+          if (a.value.attempts > expected) return ok({ attempts: a.value.attempts, replayed: true });
+          if (a.value.attempts < expected) return conflict("شمارندهٔ تلاشِ مورد انتظار از شمارندهٔ رکورد بیشتر است.");
+        }
         const res = await tx.execute(sql`UPDATE ${T} SET attempts = attempts + 1, last_error_code = ${want.errorCode}, due_at_ms = ${want.dueAtMs}
           WHERE ${keyWhere(ref2)} RETURNING attempts`);
         const row = res.rows[0];
         if (row === undefined) throw corrupt("ردیفِ قفل‌شده پس از به‌روزرسانی یافت نشد.");
-        return ok({ attempts: readCount(row["attempts"]) });
+        const attempts = readCount(row["attempts"]);
+        return ok(expected === undefined ? { attempts } : { attempts, replayed: false });
       });
     },
 

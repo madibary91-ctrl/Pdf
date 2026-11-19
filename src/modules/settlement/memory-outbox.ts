@@ -2,7 +2,7 @@
  * outbox حافظه‌ای (فقط آزمون/توسعه؛ با ریستارت می‌رود). مرجعِ معنایی پورت: هر پیاده‌سازی ماندگار باید همان `outbox-contract.ts` را بگذراند.
  * ساعت ندارد: همهٔ زمان‌ها را فراخواننده می‌دهد. خروجی‌ها کپیِ منجمدند (جداسازی از حالت درونی).
  */
-import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, OutboxCounts, OutboxEntry, OutboxResult, ReservationRef, SettlementOutbox } from "./types";
+import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, FailureInput, OutboxCounts, OutboxEntry, OutboxResult, ReservationRef, SettlementOutbox } from "./types";
 import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "./validate";
 
 type Mutable = { -readonly [K in keyof OutboxEntry]: OutboxEntry[K] };
@@ -118,7 +118,7 @@ export function createMemoryOutbox(): SettlementOutbox {
         return ok({ replayed: false });
       }),
 
-    recordFailure: (ref: ReservationRef, failure: Readonly<{ errorCode: string; dueAtMs: number }>) =>
+    recordFailure: (ref: ReservationRef, failure: FailureInput) =>
       guard(() => {
         const r = parseRef(ref);
         const f = parseFailure(failure);
@@ -126,10 +126,17 @@ export function createMemoryOutbox(): SettlementOutbox {
         if (!f.ok) return f;
         const a = active(r.value);
         if (!a.ok) return a;
+        const want = f.value;
+        const expected = want.expectedAttempts;
+        if (expected !== undefined) {
+          // compare-and-set (ADR-0028): کسِ دیگری پیش افتاده ⇒ بی‌نوشتن؛ شمارندهٔ «آینده» ⇒ خطای منطقی.
+          if (a.value.attempts > expected) return ok({ attempts: a.value.attempts, replayed: true });
+          if (a.value.attempts < expected) return conflict("شمارندهٔ تلاشِ مورد انتظار از شمارندهٔ رکورد بیشتر است.");
+        }
         a.value.attempts += 1;
-        a.value.lastErrorCode = f.value.errorCode;
-        a.value.dueAtMs = f.value.dueAtMs;
-        return ok({ attempts: a.value.attempts });
+        a.value.lastErrorCode = want.errorCode;
+        a.value.dueAtMs = want.dueAtMs;
+        return ok(expected === undefined ? { attempts: a.value.attempts } : { attempts: a.value.attempts, replayed: false });
       }),
 
     bury: (ref: ReservationRef, burial: Readonly<{ reason: DeadReason; errorCode: string | null; atMs: number }>) =>
