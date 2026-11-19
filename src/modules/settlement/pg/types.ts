@@ -3,9 +3,10 @@
  * این ماژول هیچ‌وقت خودش اتصال نمی‌سازد: `drizzle(pool)` یا `db` برنامه را از بیرون می‌گیرد.
  */
 import type { PgMigrationReport, PgMigrationStatus, PgStoreResult } from "@/modules/ledger";
-import type { SettlementOutbox } from "../types";
+import type { DueClaimer, SettlementOutbox } from "../types";
 
 export type PgSettlementOutbox = SettlementOutbox &
+  DueClaimer &
   Readonly<{
     /** مهاجرت‌ها را اعمال می‌کند (idempotent و هم‌زمان‌امن). outbox خودش هرگز مهاجرت نمی‌کند. */
     migrate(): Promise<PgStoreResult<PgMigrationReport>>;

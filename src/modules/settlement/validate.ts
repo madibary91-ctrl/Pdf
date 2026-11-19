@@ -3,9 +3,11 @@
  * مقدارها یک‌بار خوانده می‌شوند (getter/Proxy نتواند بین اعتبارسنجی و استفاده تغییر دهد).
  */
 import { ID_RE, UNIT_RE } from "@/modules/ledger";
-import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, FailureInput, OutboxError, OutboxErrorCode, OutboxResult, ReservationRef } from "./types";
+import type { BeginInput, ChargeIntent, ClaimQuery, CloseIntent, DeadAck, DeadReason, FailureInput, OutboxError, OutboxErrorCode, OutboxResult, ReservationRef } from "./types";
 
 export const LIST_LIMIT_MAX = 1000;
+/** سقفِ اجارهٔ رفتگر (یک شبانه‌روز)؛ اجارهٔ بی‌پایان رکورد را عملاً گم می‌کرد (ADR-0029). */
+export const LEASE_MS_MAX = 86_400_000;
 
 export const outboxError = (code: OutboxErrorCode, message: string): { ok: false; error: OutboxError } => ({ ok: false, error: Object.freeze({ code, message }) });
 const invalid = (): { ok: false; error: OutboxError } => outboxError("INVALID_INPUT", "ورودی outbox نامعتبر است.");
@@ -101,6 +103,22 @@ export function parseDue(raw: unknown): OutboxResult<Readonly<{ nowMs: number; l
     const l = parseLimit(limit);
     if (!isCount(nowMs) || !l.ok) return invalid();
     return { ok: true, value: Object.freeze({ nowMs, limit: l.value }) };
+  } catch {
+    return invalid();
+  }
+}
+
+/** `isLeaseMs` همان حدِ `claimDue` و پیکربندیِ رفتگر است؛ یک تعریف، دو مصرف‌کننده. */
+export const isLeaseMs = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 1 && v <= LEASE_MS_MAX;
+
+/** `nowMs + leaseMs` هم باید صحیحِ ایمن بماند (ستونِ `due_at_ms` همین دامنه است)؛ وگرنه ورودی نامعتبر است، نه سرریزِ بی‌صدا. */
+export function parseClaim(raw: unknown): OutboxResult<ClaimQuery> {
+  try {
+    if (!isRecord(raw)) return invalid();
+    const { nowMs, limit, leaseMs } = raw;
+    const l = parseLimit(limit);
+    if (!isCount(nowMs) || !l.ok || !isLeaseMs(leaseMs) || !Number.isSafeInteger(nowMs + leaseMs)) return invalid();
+    return { ok: true, value: Object.freeze({ nowMs, limit: l.value, leaseMs }) };
   } catch {
     return invalid();
   }

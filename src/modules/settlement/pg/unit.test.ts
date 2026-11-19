@@ -76,7 +76,7 @@ describe("settlement/pg · createPgSettlementOutbox", () => {
     }
     const made = createPgSettlementOutbox(db);
     expect(made.ok && Object.isFrozen(made.value)).toBe(true);
-    expect(made.ok && Object.keys(made.value).sort()).toEqual(["acknowledgeDead", "begin", "bury", "counts", "finish", "get", "listDead", "listDue", "listUnacknowledgedDead", "migrate", "recordCharge", "recordClose", "recordFailure", "resolveClose", "status"]);
+    expect(made.ok && Object.keys(made.value).sort()).toEqual(["acknowledgeDead", "begin", "bury", "claimDue", "counts", "finish", "get", "listDead", "listDue", "listUnacknowledgedDead", "migrate", "recordCharge", "recordClose", "recordFailure", "resolveClose", "status"]);
   });
 });
 

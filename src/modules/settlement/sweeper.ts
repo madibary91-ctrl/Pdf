@@ -8,7 +8,7 @@
 import { resolveSweeperConfig } from "./config";
 import type { ResolvedSweeperConfig } from "./config";
 import { safeLedger, safeOutbox } from "./ports";
-import type { BuriedItem, DeadReason, OutboxEntry, SettlementResult, Sweeper, SweepReport } from "./types";
+import type { BuriedItem, DeadReason, DueClaimer, OutboxEntry, SettlementResult, Sweeper, SweepReport } from "./types";
 
 const TRANSIENT: ReadonlySet<string> = new Set(["STORE_FAILURE", "INTERNAL_ERROR"]);
 
@@ -28,6 +28,12 @@ function readClock(clock: ResolvedSweeperConfig["clock"]): number | null {
   } catch {
     return null;
   }
+}
+
+/** اجاره تا لحظهٔ `leaseEndMs` (انحصاری) است؛ ساعتِ خراب ⇒ نمی‌توان ثابت کرد اجاره هست ⇒ «نیست» (محافظه‌کار). */
+function leaseHeld(clock: ResolvedSweeperConfig["clock"], leaseEndMs: number): boolean {
+  const t = readClock(clock);
+  return t !== null && t < leaseEndMs;
 }
 
 export function createSettlementSweeper(raw: unknown): SettlementResult<Sweeper> {
@@ -79,20 +85,38 @@ export function createSettlementSweeper(raw: unknown): SettlementResult<Sweeper>
     async sweep(): Promise<SweepReport> {
       const now = readClock(cfg.clock);
       if (now === null) return Object.freeze({ ...EMPTY, listFailed: true });
-      const listed = await safeOutbox(() => cfg.outbox.listDue({ nowMs: now, limit: cfg.limit }));
-      if (!listed.ok) return Object.freeze({ ...EMPTY, listFailed: true });
+      // بی‌اجاره: `listDue` (رفتارِ پیشین). با اجاره (ADR-0029): `claimDue` رکوردها را اتمی می‌گیرد و تا `now + leaseMs` از رفتگرهای دیگر پنهان می‌کند.
+      let entries: readonly OutboxEntry[];
+      if (cfg.leaseMs === null) {
+        const listed = await safeOutbox(() => cfg.outbox.listDue({ nowMs: now, limit: cfg.limit }));
+        if (!listed.ok) return Object.freeze({ ...EMPTY, listFailed: true });
+        entries = listed.value;
+      } else {
+        const leaseMs = cfg.leaseMs;
+        const claimed = await safeOutbox(() => (cfg.outbox as unknown as DueClaimer).claimDue({ nowMs: now, limit: cfg.limit, leaseMs }));
+        // پورتِ بیرونی؛ ارزشِ غیرِ آرایه را «لیست‌نشد» می‌خوانیم (نه پرتاب).
+        if (!claimed.ok || !Array.isArray(claimed.value)) return Object.freeze({ ...EMPTY, listFailed: true });
+        entries = claimed.value;
+      }
+      const leaseEndMs = cfg.leaseMs === null ? null : now + cfg.leaseMs;
 
       let settled = 0;
       let retryLater = 0;
       let raced = 0;
       let outboxFailures = 0;
       const buried: BuriedItem[] = [];
-      for (const entry of listed.value) {
+      for (const entry of entries) {
         let step: Step;
-        try {
-          step = await settleEntry(entry, now);
-        } catch {
-          step = { kind: "retry" }; // خطای برنامه‌نویسی؛ رکورد دست‌نخورده می‌ماند و گذر بعد دوباره می‌بیند.
+        if (leaseEndMs !== null && !leaseHeld(cfg.clock, leaseEndMs)) {
+          // اجارهٔ این رکورد تمام شده (دسته از `leaseMs` کندتر بود): رفتگرِ دیگری ممکن است همین حالا آن را گرفته باشد، پس کارِ تکراری نمی‌کنیم.
+          // رکورد دست‌نخورده می‌ماند و (سررسیدش گذشته) در گذرِ بعدیِ هر رفتگر دوباره گرفته می‌شود؛ چیزی گم نمی‌شود.
+          step = { kind: "raced" };
+        } else {
+          try {
+            step = await settleEntry(entry, now);
+          } catch {
+            step = { kind: "retry" }; // خطای برنامه‌نویسی؛ رکورد دست‌نخورده می‌ماند و گذر بعد دوباره می‌بیند.
+          }
         }
         if (step.kind === "settled") settled += 1;
         else if (step.kind === "retry") retryLater += 1;
@@ -100,7 +124,7 @@ export function createSettlementSweeper(raw: unknown): SettlementResult<Sweeper>
         else if (step.kind === "outbox-failure") outboxFailures += 1;
         else buried.push(Object.freeze({ tenantId: entry.tenantId, accountId: entry.accountId, reservationId: entry.reservationId, reason: step.reason, errorCode: step.code }));
       }
-      return Object.freeze({ examined: listed.value.length, settled, retryLater, raced, outboxFailures, buried: Object.freeze(buried), listFailed: false });
+      return Object.freeze({ examined: entries.length, settled, retryLater, raced, outboxFailures, buried: Object.freeze(buried), listFailed: false });
     },
   });
   return { ok: true, value: sweeper };

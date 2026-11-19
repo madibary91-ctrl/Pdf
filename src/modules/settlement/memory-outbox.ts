@@ -2,8 +2,8 @@
  * outbox حافظه‌ای (فقط آزمون/توسعه؛ با ریستارت می‌رود). مرجعِ معنایی پورت: هر پیاده‌سازی ماندگار باید همان `outbox-contract.ts` را بگذراند.
  * ساعت ندارد: همهٔ زمان‌ها را فراخواننده می‌دهد. خروجی‌ها کپیِ منجمدند (جداسازی از حالت درونی).
  */
-import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, FailureInput, OutboxCounts, OutboxEntry, OutboxResult, ReservationRef, SettlementOutbox } from "./types";
-import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "./validate";
+import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, DueClaimer, FailureInput, OutboxCounts, OutboxEntry, OutboxResult, ReservationRef, SettlementOutbox } from "./types";
+import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseClaim, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "./validate";
 
 type Mutable = { -readonly [K in keyof OutboxEntry]: OutboxEntry[K] };
 
@@ -21,7 +21,7 @@ function view(e: Mutable): OutboxEntry {
 const byDue = (a: Mutable, b: Mutable): number => a.dueAtMs - b.dueAtMs || (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0);
 const byDeath = (a: Mutable, b: Mutable): number => (a.settledAtMs ?? 0) - (b.settledAtMs ?? 0) || (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0);
 
-export function createMemoryOutbox(): SettlementOutbox {
+export function createMemoryOutbox(): SettlementOutbox & DueClaimer {
   const rows = new Map<string, Mutable>();
   /** تأییدهای رسیدگی (نوشتن‌یک‌بار؛ زمانِ اولین تأیید). */
   const acks = new Map<string, number>();
@@ -170,6 +170,16 @@ export function createMemoryOutbox(): SettlementOutbox {
         if (!q.ok) return q;
         const due = [...rows.values()].filter((e) => isActive(e) && e.dueAtMs <= q.value.nowMs).sort(byDue);
         return ok(Object.freeze(due.slice(0, q.value.limit).map(view)));
+      }),
+
+    claimDue: (query) =>
+      guard(() => {
+        const q = parseClaim(query);
+        if (!q.ok) return q;
+        // اتمی (تک‌نخی): گرفتن و عقب‌بردنِ سررسید یک گام است؛ ترتیب همان `listDue` پیش از عقب‌بردن.
+        const picked = [...rows.values()].filter((e) => isActive(e) && e.dueAtMs <= q.value.nowMs).sort(byDue).slice(0, q.value.limit);
+        for (const e of picked) e.dueAtMs = q.value.nowMs + q.value.leaseMs;
+        return ok(Object.freeze(picked.map(view)));
       }),
 
     listDead: (query) =>

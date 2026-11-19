@@ -4,12 +4,14 @@
 import { LIMITS } from "@/modules/ledger";
 import type { Clock, CloseRemainder, Ledger } from "@/modules/ledger";
 import { isDecoratedLedger } from "./decorated";
+import { LEASE_MS_MAX, isLeaseMs } from "./validate";
 import type { DeadLetter, DeadLetterOutbox, DurableLedgerConfig, LoopTimer, SettlementConfigError, SettlementOutbox, SettlementResult, SweepLoopConfig, SweepObserver, Sweeper, SweeperConfig } from "./types";
 
 export const SETTLEMENT_LIMITS = Object.freeze({
   maxGraceMs: LIMITS.MAX_TTL_MS / 2,
   defaultSweepLimit: 100,
   maxSweepLimit: 1000,
+  maxLeaseMs: LEASE_MS_MAX,
   defaultMaxAttempts: 10,
   maxMaxAttempts: 100,
   defaultRetryDelayMs: 30_000,
@@ -69,13 +71,14 @@ export function resolveDurableLedgerConfig(raw: unknown): SettlementResult<Durab
   }
 }
 
-export type ResolvedSweeperConfig = Readonly<{ ledger: Ledger; outbox: SettlementOutbox; clock: Clock; limit: number; maxAttempts: number; retryDelayMs: number }>;
+/** `leaseMs`: `null` ⇒ بی‌اجاره (`listDue`، رفتارِ پیشین)؛ عدد ⇒ `outbox.claimDue` (ADR-0029؛ در این حالت `outbox` یقیناً `claimDue` دارد). */
+export type ResolvedSweeperConfig = Readonly<{ ledger: Ledger; outbox: SettlementOutbox; clock: Clock; limit: number; maxAttempts: number; retryDelayMs: number; leaseMs: number | null }>;
 
 export function resolveSweeperConfig(raw: unknown): SettlementResult<ResolvedSweeperConfig> {
   const issues: string[] = [];
   try {
     if (!isRecord(raw)) return configError(["پیکربندی باید یک شیء ساده باشد."]);
-    const allowed = new Set(["ledger", "outbox", "clock", "limit", "maxAttempts", "retryDelayMs"]);
+    const allowed = new Set(["ledger", "outbox", "clock", "limit", "maxAttempts", "retryDelayMs", "leaseMs"]);
     for (const k of Object.keys(raw)) if (!allowed.has(k)) issues.push(`کلید ناشناخته: ${JSON.stringify(k.slice(0, 40))}.`);
     if (!hasFns(raw["ledger"], ["charge", "close"])) issues.push("ledger باید charge و close داشته باشد.");
     if (!hasFns(raw["outbox"], OUTBOX_METHODS)) issues.push("outbox باید پورت SettlementOutbox کامل باشد.");
@@ -88,10 +91,24 @@ export function resolveSweeperConfig(raw: unknown): SettlementResult<ResolvedSwe
     if (!isIntIn(limit, 1, SETTLEMENT_LIMITS.maxSweepLimit)) issues.push(`limit باید صحیح ۱ تا ${SETTLEMENT_LIMITS.maxSweepLimit} باشد.`);
     if (!isIntIn(maxAttempts, 1, SETTLEMENT_LIMITS.maxMaxAttempts)) issues.push(`maxAttempts باید صحیح ۱ تا ${SETTLEMENT_LIMITS.maxMaxAttempts} باشد.`);
     if (!isIntIn(retryDelayMs, 1, SETTLEMENT_LIMITS.maxRetryDelayMs)) issues.push(`retryDelayMs باید صحیح ۱ تا ${SETTLEMENT_LIMITS.maxRetryDelayMs} باشد.`);
+    // اجارهٔ رفتگر (ADR-0029): اختیاری؛ حاضر-ولی-`undefined` مثلِ نبودن است. با آن، outbox باید `claimDue` داشته باشد (خاموش‌شدنِ بی‌صدا ممنوع).
+    const leaseMs = raw["leaseMs"];
+    if (leaseMs !== undefined) {
+      if (!isLeaseMs(leaseMs)) issues.push(`leaseMs باید صحیح ۱ تا ${LEASE_MS_MAX} باشد.`);
+      if (!hasFns(raw["outbox"], ["claimDue"])) issues.push("با leaseMs، outbox باید claimDue داشته باشد.");
+    }
     if (issues.length > 0) return configError(issues);
     return {
       ok: true,
-      value: Object.freeze({ ledger: raw["ledger"] as Ledger, outbox: raw["outbox"] as SettlementOutbox, clock: raw["clock"] as Clock, limit: limit as number, maxAttempts: maxAttempts as number, retryDelayMs: retryDelayMs as number }),
+      value: Object.freeze({
+        ledger: raw["ledger"] as Ledger,
+        outbox: raw["outbox"] as SettlementOutbox,
+        clock: raw["clock"] as Clock,
+        limit: limit as number,
+        maxAttempts: maxAttempts as number,
+        retryDelayMs: retryDelayMs as number,
+        leaseMs: leaseMs === undefined ? null : (leaseMs as number),
+      }),
     };
   } catch {
     return configError(["خواندن پیکربندی ناموفق بود."]);

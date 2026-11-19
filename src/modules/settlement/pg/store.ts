@@ -10,7 +10,7 @@
 import { sql } from "drizzle-orm";
 import type { LedgerDatabase, LedgerExecutor, PgStoreResult } from "@/modules/ledger";
 import type { BeginInput, ChargeIntent, CloseIntent, DeadAck, DeadReason, FailureInput, OutboxEntry, OutboxResult, ReservationRef } from "../types";
-import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseCloseIntent, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "../validate";
+import { outboxError, parseBegin, parseBurial, parseChargeIntent, parseClaim, parseCloseIntent, parseDeadAck, parseDue, parseFailure, parseListDead, parseRef, isCount } from "../validate";
 import { corrupt } from "./errors";
 import { assertCurrent, migrate, migrationStatus } from "./migrate";
 import { SETTLEMENT_DEFAULT_SCHEMA, parseSchemaName, tableRef } from "./naming";
@@ -211,6 +211,34 @@ export function buildPgOutbox(db: LedgerDatabase, schema: string): PgSettlementO
           LIMIT ${limit}`);
         return ok(Object.freeze(res.rows.map(entryFromRow)));
       }, true);
+    },
+
+    claimDue: (query) => {
+      const q = parseClaim(query);
+      if (!q.ok) return Promise.resolve(q);
+      const { nowMs, limit, leaseMs } = q.value;
+      const leaseUntilMs = nowMs + leaseMs; // parseClaim: صحیحِ ایمن
+      return run(async (tx) => {
+        // گرفتن و عقب‌بردنِ سررسید در **یک دستور** (ADR-0029). `SKIP LOCKED`: ردیفی که تراکنشِ دیگری (رفتگرِ هم‌زمان یا نوشتنِ درون‌خطی) قفل کرده منتظر نمی‌ماند و
+        // رد می‌شود؛ ردیفی که رقیب پیش‌تر عقب برده و commit کرده، در بازبینیِ `due_at_ms <= now` (READ COMMITTED) خودبه‌خود حذف می‌شود.
+        // `MATERIALIZED`: زیرپرسشِ قفل‌کننده دقیقاً یک بار اجرا شود. ستون‌های `picked` نامِ دیگر دارند تا در RETURNING مبهم نشوند.
+        const res = await tx.execute(sql`WITH picked AS MATERIALIZED (
+            SELECT tenant_id AS k_tenant, account_id AS k_account, reservation_id AS k_reservation, due_at_ms AS k_due
+            FROM ${T}
+            WHERE state IN ('open', 'settling') AND due_at_ms <= ${nowMs}
+            ORDER BY due_at_ms, tenant_id, account_id, reservation_id
+            LIMIT ${limit}
+            FOR UPDATE SKIP LOCKED
+          ), claimed AS (
+            UPDATE ${T} AS o SET due_at_ms = ${leaseUntilMs}
+            FROM picked p
+            WHERE o.tenant_id = p.k_tenant AND o.account_id = p.k_account AND o.reservation_id = p.k_reservation
+            RETURNING ${COLUMNS}, p.k_due AS k_due
+          )
+          SELECT ${COLUMNS} FROM claimed
+          ORDER BY k_due, tenant_id, account_id, reservation_id`);
+        return ok(Object.freeze(res.rows.map(entryFromRow)));
+      });
     },
 
     listDead: (query) => {

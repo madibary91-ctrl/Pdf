@@ -66,6 +66,11 @@ export type FailureRecorded = Readonly<{ attempts: number; replayed?: boolean }>
 export type DeadAck = Readonly<{ atMs: number }>;
 export type OutboxCounts = Readonly<Record<EntryState, number>>;
 export type DueQuery = Readonly<{ nowMs: number; limit: number }>;
+/**
+ * م۳‑د‑۳ب (ADR-0029): درخواستِ «گرفتنِ» رکوردهای سررسیده. `leaseMs` (۱…۸۶٬۴۰۰٬۰۰۰) مدتی است که رکوردِ گرفته‌شده از دیدِ رفتگرهای دیگر پنهان می‌ماند؛
+ * `nowMs + leaseMs` باید صحیحِ ایمن بماند.
+ */
+export type ClaimQuery = Readonly<{ nowMs: number; limit: number; leaseMs: number }>;
 
 /**
  * پورت outbox (قرارداد: `outbox-contract.ts`). همهٔ متدها `Promise<OutboxResult>` برمی‌گردانند و **هرگز نمی‌پرتابند**.
@@ -114,6 +119,20 @@ export type SettlementOutbox = Readonly<{
   counts(): Promise<OutboxResult<OutboxCounts>>;
 }>;
 
+/**
+ * م۳‑د‑۳ب (ADR-0029): قابلیتِ اختیاریِ «اجاره» (lease) روی outbox؛ هر دو outboxِ حافظه‌ای و PostgreSQL آن را دارند و آزمونِ قراردادِ
+ * `contract/claim-contract.ts` را بی‌تغییر می‌گذرانند. عمداً بخشی از `SettlementOutbox` نیست تا هر outboxِ بیرونیِ موجود (که فقط `listDue` دارد) همچنان معتبر بماند.
+ *
+ * `claimDue` اتمی (در پایگاه: یک تراکنش و `FOR UPDATE SKIP LOCKED`) رکوردهای **فعال** با `dueAtMs ≤ nowMs` را به ترتیبِ `(dueAtMs، شناسه)` تا `limit` برمی‌دارد و
+ * **سررسیدشان را به `nowMs + leaseMs` عقب می‌برد** (تأخیرِ محض: وضعیت، شمارندهٔ تلاش و کد خطا دست‌نخورده)، و عکسِ **پس از** به‌روزرسانی را به همان ترتیب برمی‌گرداند
+ * (پس `dueAtMs`ِ عکس همان پایانِ اجاره است). رفتگرِ دیگری که پیش از پایانِ اجاره بخواند، آن رکورد را نه در `listDue` می‌بیند و نه در `claimDue`؛
+ * اگر دارندهٔ اجاره بمیرد، اجاره خودبه‌خود (با گذشتنِ زمان، بی‌هیچ پاکسازی) تمام می‌شود و رکورد دوباره سررسیده است.
+ * اجاره **قفلِ درستی** نیست، فقط کاهندهٔ کارِ تکراری است: درستیِ مالی همچنان با idempotencyِ دفتر و compare-and-set ِ `recordFailure` (ADR-0028) است.
+ */
+export type DueClaimer = Readonly<{
+  claimDue(query: ClaimQuery): Promise<OutboxResult<readonly OutboxEntry[]>>;
+}>;
+
 export type SettlementConfigError = Readonly<{ code: "INVALID_CONFIG"; message: string; issues: readonly string[] }>;
 export type SettlementResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; error: SettlementConfigError }>;
 
@@ -138,6 +157,12 @@ export type SweeperConfig = Readonly<{
   maxAttempts?: number;
   /** فاصلهٔ تلاش دوباره: `retryDelayMs × (تلاش‌ها + ۱)`. پیش‌فرض ۳۰٬۰۰۰. */
   retryDelayMs?: number;
+  /**
+   * م۳‑د‑۳ب (ADR-0029): اگر داده شود (۱…۸۶٬۴۰۰٬۰۰۰) رفتگر به‌جای `listDue` از `outbox.claimDue` می‌خواند (outbox باید `DueClaimer` باشد) و رکوردهای گرفته‌شده
+   * تا `leaseMs` از دیدِ رفتگرهای دیگر پنهان می‌مانند. باید بزرگ‌تر از بدترین زمانِ پردازشِ یک دسته (`limit × زمانِ دفتر`) باشد؛
+   * رفتگر هر رکورد را پیش از پردازش با ساعت می‌سنجد و اگر اجاره‌اش تمام شده آن را رها می‌کند (`raced`). بی‌آن: رفتارِ پیشین (`listDue`).
+   */
+  leaseMs?: number;
 }>;
 
 export type BuriedItem = Readonly<{ tenantId: string; accountId: string; reservationId: string; reason: DeadReason; errorCode: string | null }>;
