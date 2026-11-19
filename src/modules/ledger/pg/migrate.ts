@@ -60,12 +60,33 @@ export function reconcile(ledger: readonly LedgerRow[], migrations: readonly Mig
   return { applied, pending };
 }
 
+/**
+ * وجودِ شِما را بی‌مسابقه تضمین می‌کند (ADR-0035)؛ **فقط داخل تراکنشِ مهاجرت و پس از قفلِ ماژول** صدا زده می‌شود.
+ *  ۱. قفلِ مشترکِ شِما (`schema:ensure:<شِما>`): `ledger` و `settlement` می‌توانند شِمای مشترک داشته باشند ولی قفلِ ماژولی‌شان جداست؛
+ *     بدونِ این قفل دو سازندهٔ هم‌زمانِ متفاوتِ یک شِما `23505` می‌گرفتند. ترتیبِ قفل‌ها ثابت است (ماژول ← شِما) ⇒ بن‌بست ممکن نیست.
+ *     **این کلید عمداً در ledger و settlement جداگانه نوشته شده** (رابطِ عمومی عوض نمی‌شود) و آزمونِ PostgreSQL برابریِ آن‌ها را قفل می‌کند.
+ *  ۲. وجودِ شِما با پرسشِ معمولیِ تازه از `pg_namespace` سنجیده می‌شود، نه با `CREATE SCHEMA IF NOT EXISTS`: بازنده‌ای که پیش‌تر شِما را
+ *     جست‌وجو کرده و DDL اجرا کرده بود پس از انتظارِ قفل هنوز «شِما نیست» می‌دید و `23505 pg_namespace_nspname_index` می‌خورد (اندازه‌گیری
+ *     در ADR-0035؛ علتِ درونیِ PostgreSQL اثبات نشده، رفتار قابل‌بازتولید است).
+ *  ۳. فقط در نبودِ ردیف می‌سازد؛ `IF NOT EXISTS` می‌ماند (دفاع در برابرِ سازندهٔ بیرون از این دو ماژول).
+ * پاسخِ ناشناختهٔ SELECT شکست‌بسته است (`CORRUPT_DATA`)؛ هرگز «پس بسازیم» نیست. خطاها بلعیده نمی‌شوند.
+ */
+export async function ensureSchema(ex: LedgerExecutor, schema: string): Promise<void> {
+  await ex.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`schema:ensure:${schema}`}, 0))`);
+  const found = await ex.execute(sql`SELECT 1 AS present FROM pg_catalog.pg_namespace WHERE nspname = ${schema}`);
+  const rows: unknown = (found as { rows?: unknown } | undefined)?.rows;
+  if (!Array.isArray(rows)) {
+    throw new LedgerStoreError({ code: "CORRUPT_DATA", message: "پاسخِ بررسیِ وجودِ شِما شکل نادرستی دارد؛ شِما ساخته نشد." });
+  }
+  if (rows.length === 0) await ex.execute(sql`CREATE SCHEMA IF NOT EXISTS ${sql.identifier(schema)}`);
+}
+
 export async function migrate(db: LedgerDatabase, schema: string): Promise<PgStoreResult<PgMigrationReport>> {
   try {
     const report = await db.transaction(async (tx) => {
       // قفل فقط برای راه‌اندازی/مهاجرتِ همین شِما (CREATE SCHEMA/TABLE هم‌زمان در پستگرس مسابقه دارد).
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ledger:migrate:${schema}`}, 0))`);
-      await tx.execute(sql`CREATE SCHEMA IF NOT EXISTS ${sql.identifier(schema)}`);
+      await ensureSchema(tx, schema);
       await tx.execute(sql`CREATE TABLE IF NOT EXISTS ${tableRef(schema, "migration_ledger")} (
         name text NOT NULL,
         checksum text NOT NULL,
