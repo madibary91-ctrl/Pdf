@@ -341,3 +341,74 @@ export type SweepLoop = Readonly<{
   stop(): Promise<LoopStopResult>;
   status(): SweepLoopStatus;
 }>;
+
+// ───────────────────────── م۳‑ه‑۱: ارزیابِ سلامتِ رفتگر (ADR-0030) ─────────────────────────
+
+/**
+ * - `ok`: رفتگر طبقِ قرارداد کار می‌کند.
+ * - `degraded`: هشدار؛ هنوز بودجهٔ ایمنیِ `graceMs` تمام نشده (پروب ۲۰۰ می‌دهد تا ریستارتِ بی‌جا رخ ندهد).
+ * - `down`: ضمانتِ «رزروِ یتیم پیش از انقضا دیده می‌شود» دیگر برقرار نیست یا قابل‌سنجش نیست (پروب ۵۰۳؛ شکستِ بسته).
+ */
+export type HealthStatus = "ok" | "degraded" | "down";
+
+/**
+ * کدهای دلیل (فقط شمارشی؛ هرگز متنِ خام یا مقدارِ ورودی). تفسیر در ADR-0030:
+ * - `STATUS_INVALID`: `status` شکلِ `SweepLoopStatus` ندارد (یا خواندنش پرتاب کرد). `CLOCK_INVALID`: `nowMs`/`sinceMs` نامعتبر است.
+ * - `LOOP_STOPPED`/`LOOP_STALLED`: حلقه کار نمی‌کند (`stalled` یعنی زمان‌سنج نتوانست گذر بعد را بسازد). `LOOP_STOPPING`: در حال خاموشی.
+ * - `LOOP_FAULTING`: گذرِ اخیر شکست خورده (`fault` = آخرین نوعِ شکست). `STALE_SUCCESS`: از آخرین گذرِ بی‌شکست زمانِ زیادی گذشته.
+ * - `NO_SUCCESS_SINCE_START`: از آغاز (`sinceMs`) هیچ گذرِ بی‌شکستی دیده نشده. `NOT_YET_RUN`: هنوز هیچ گذری نبوده و مرجعِ آغاز داده نشده.
+ * - `CLOCK_BEHIND`: ساعتِ پروب از آخرین موفقیت/آغاز عقب‌تر است (پرشِ ساعت؛ سن نامعلوم).
+ */
+export type HealthReasonCode =
+  | "STATUS_INVALID"
+  | "CLOCK_INVALID"
+  | "LOOP_STOPPED"
+  | "LOOP_STALLED"
+  | "LOOP_STOPPING"
+  | "LOOP_FAULTING"
+  | "STALE_SUCCESS"
+  | "NO_SUCCESS_SINCE_START"
+  | "NOT_YET_RUN"
+  | "CLOCK_BEHIND";
+
+export type HealthReason = Readonly<{
+  code: HealthReasonCode;
+  severity: "degraded" | "down";
+  /** فقط برای `LOOP_FAULTING`: آخرین نوعِ شکستِ حلقه؛ وگرنه `null`. */
+  fault: LoopFaultKind | null;
+}>;
+
+/** نتیجهٔ ارزیابی: منجمد، JSON-پذیر و فقط شمارنده/کد (بی‌نشتِ داده). */
+export type SweepHealth = Readonly<{
+  status: HealthStatus;
+  /** خطرناک‌ترین‌ها اول؛ در هر سطح به ترتیبِ قاعده‌ها. `ok` ⇔ خالی. */
+  reasons: readonly HealthReason[];
+  /** سکوتِ رفتگر: `nowMs − مرجع` (مرجع = دیرترینِ `lastSuccessAtMs` و `sinceMs`)؛ `null` اگر نامعلوم/نامربوط. */
+  silenceMs: number | null;
+  consecutiveFailures: number | null;
+  lastFault: LoopFaultKind | null;
+  /** آستانه‌های به‌کاررفته (برای نمایش/ثبت). */
+  degradedAfterMs: number;
+  downAfterMs: number;
+}>;
+
+export type SweepHealthConfig = Readonly<{
+  /** همان `graceMs` ی که به `createDurableLedger` و `createSweepLoop` داده شد (۲…`SETTLEMENT_LIMITS.maxGraceMs`). */
+  graceMs: number;
+  /** سکوتِ بیش از این ⇒ `degraded`. صحیح، ۱…`maxGraceMs`. پیش‌فرض `⌊graceMs/2⌋` (بیشینهٔ فاصلهٔ مجازِ دو گذر). */
+  degradedAfterMs?: number;
+  /** سکوتِ بیش از این ⇒ `down`. صحیح، ≥ `degradedAfterMs`، ≤ `maxGraceMs`. پیش‌فرض `graceMs`. */
+  downAfterMs?: number;
+}>;
+
+export type SweepHealthInput = Readonly<{
+  /** `loop.status()` (عکسِ حلقه). */
+  status: SweepLoopStatus;
+  /** ساعتِ همین لحظه (از فراخواننده؛ ماژول ساعت ندارد). */
+  nowMs: number;
+  /** ساعتِ آخرین `start()` موفق (اختیاری؛ ریشهٔ ترکیب نگه می‌دارد). بدونِ آن، «هرگز موفق نشده» سن ندارد. */
+  sinceMs?: number | null;
+}>;
+
+/** `evaluate` هرگز نمی‌پرتابد و ورودیِ نامعتبر را `down` (شکستِ بسته) می‌شمارد. */
+export type SweepHealthCheck = Readonly<{ evaluate(input: SweepHealthInput): SweepHealth }>;
