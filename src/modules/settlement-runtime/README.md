@@ -30,4 +30,4 @@ await rt.value.stop();               // { clean }
 `node-timer.test.ts`، `clock.test.ts`، `config.test.ts` (مرز و پیش‌فرض‌ها)، `runtime.test.ts` (چرخهٔ عمر، پیش‌بازرسی، سلامت، پول، زنگ؛ حافظه و زمانِ مجازی)، `pg-runtime.unit.test.ts` (بی‌پایگاه: اعتبارسنجی و نگاشتِ SQLSTATE)، `runtime.pg.test.ts` (PostgreSQL واقعی)، `purity.test.ts` (نگهبانِ منبع). جهشی: `python3 tooling/mutation/settlement-runtime.py`.
 
 ## محدودیت‌ها
-به `src/app` و `/api/health` وصل نیست (م۳‑ه‑۳)؛ `deliver`ِ واقعی و پایشِ پسماندِ زنگ نیست (م۳‑ه‑۴)؛ `graceMs` باید دستی با دفترِ ماندگار یکی باشد؛ پیش‌بازرسی فقط در `start`.
+خودِ ماژول به Next وصل نیست؛ اتصال به `src/app` (`instrumentation` و پروب‌های `/api/health/{live,ready,startup}`) را `settlement-bootstrap` انجام می‌دهد (م۳‑ه‑۳، ADR-0033)؛ مهاجرتِ صریح: `npm run settlement:migrate -- up` (ADR-0034)؛ `deliver`ِ واقعی و پایشِ پسماندِ زنگ نیست (م۳‑ه‑۴)؛ `graceMs` باید دستی با دفترِ ماندگار یکی باشد؛ پیش‌بازرسی فقط در `start`.
