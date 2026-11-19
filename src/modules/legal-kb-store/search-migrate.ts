@@ -4,7 +4,7 @@
  */
 import { sql } from "drizzle-orm";
 import { StoreAbort, toStoreError } from "./errors";
-import { reconcile, type LedgerRow } from "./migrate";
+import { ensureSchema, reconcile, type LedgerRow } from "./migrate";
 import { migrationChecksum } from "./migrations";
 import { searchSchemaName, searchTableRef } from "./naming";
 import { SEARCH_MIGRATIONS, renderSearchStatement } from "./search-migrations";
@@ -26,7 +26,7 @@ export async function migrateSearch(db: KbDatabase, schema: string): Promise<Sto
   try {
     const report = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legal-kb-store:search-migrate"}, 0))`);
-      await tx.execute(sql`CREATE SCHEMA IF NOT EXISTS ${sql.identifier(searchSchemaName(schema))}`);
+      await ensureSchema(tx, searchSchemaName(schema));
       await tx.execute(sql`CREATE TABLE IF NOT EXISTS ${searchTableRef(schema, "search_ledger")} (
         name text NOT NULL,
         checksum text NOT NULL,

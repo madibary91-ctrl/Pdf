@@ -108,6 +108,7 @@ await store.searchStatus();    // { totalVersions, indexed, missing, stale, orph
   `trust.test.ts` (تأیید/پس‌گرفتن/اصلاح، ممیزی فقط‌افزودنی، مسابقه‌ها، قفل ردیفِ قطعی، ارتقا از ۰۰۰۱)،
   `incremental.test.ts` (**تفاضلی:** «A سپس افزایشیِ B ≡ درج یک‌جای A∪B» روی نمونه و ۲۵ بذر تصادفی؛ اعتبارسنجی ترکیبی؛ اتمی و هم‌زمانی).
   هر تست store خودش را همان‌جا می‌بندد (`afterEach`) چون شمار اتصال پستگرس محدود است.
+- `ensure-schema.unit.test.ts` (بدون پایگاه) و `ensure-schema.test.ts` (**PostgreSQL واقعی**، بازتولید قطعیِ مسابقهٔ `CREATE SCHEMA` برای `migrate` و `migrateSearch`، قفلِ مشترکِ `schema:ensure:<شِما>`، ۱۲ دورِ دو مهاجرِ هم‌زمان؛ ADR-0036). آزمون جهشی: `python3 tooling/mutation/kb-schema-ensure.py`.
 - آزمون جهشی: `python3 tooling/mutation/legal-kb-store.py [از تا]` (نیاز به پایگاه؛ نتیجه در یادداشت‌های ۰۰۰۶ و ۰۰۰۷). تست‌های «ویرایش‌ناپذیر» (قفل checksum) عمداً کنار گذاشته می‌شوند.
 
 ## وقتی چیزی را تغییر می‌دهید

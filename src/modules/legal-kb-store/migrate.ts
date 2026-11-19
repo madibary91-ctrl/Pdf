@@ -60,6 +60,24 @@ export function reconcile(ledger: readonly LedgerRow[], migrations: readonly Mig
   return { applied, pending };
 }
 
+/**
+ * ساختِ امنِ شِما زیر رقابت (ADR-0036؛ هم‌شکلِ ADR-0035 در `ledger`/`settlement`). داخل تراکنشِ مهاجرت و پس از قفلِ ماژول صدا زده می‌شود:
+ *  ۱. قفلِ مشورتیِ **مشترکِ شِما** `schema:ensure:<شِما>` (هم‌کلید با `ledger` و `settlement`؛ ترتیبِ قفل‌ها ثابت: ماژول ← شِما ⇒ بن‌بست ممکن نیست).
+ *  ۲. `SELECT` تازه از `pg_catalog.pg_namespace` (عکسِ لحظه‌ایِ READ COMMITTED).
+ *  ۳. فقط در نبودِ ردیف `CREATE SCHEMA IF NOT EXISTS`؛ `IF NOT EXISTS` عمداً می‌ماند (دفاع در برابرِ سازندهٔ بیرون از ماژول‌ها).
+ * پاسخِ ناشناختهٔ SELECT شکست‌بسته است (`CORRUPT_DATA`)؛ هرگز «پس بسازیم» نیست. خطاها بلعیده نمی‌شوند.
+ * (داخلی؛ از `index.ts` صادر نمی‌شود. `search-migrate.ts` هم از همین استفاده می‌کند.)
+ */
+export async function ensureSchema(ex: KbExecutor, schema: string): Promise<void> {
+  await ex.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`schema:ensure:${schema}`}, 0))`);
+  const found = await ex.execute(sql`SELECT 1 AS present FROM pg_catalog.pg_namespace WHERE nspname = ${schema}`);
+  const rows: unknown = (found as { rows?: unknown } | undefined)?.rows;
+  if (!Array.isArray(rows)) {
+    throw new StoreAbort({ code: "CORRUPT_DATA", message: "پاسخِ بررسیِ وجودِ شِما شکل نادرستی دارد؛ شِما ساخته نشد." });
+  }
+  if (rows.length === 0) await ex.execute(sql`CREATE SCHEMA IF NOT EXISTS ${sql.identifier(schema)}`);
+}
+
 export async function migrate(db: KbDatabase, schema: string): Promise<StoreResult<MigrationReport>> {
   try {
     const report = await db.transaction(async (tx) => {
@@ -67,7 +85,7 @@ export async function migrate(db: KbDatabase, schema: string): Promise<StoreResu
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legal-kb-store:migrate"}, 0))`);
       // btree_gist برای قید EXCLUDE روی (متن = ، بازه &&). از پایگاه‌های «trusted» است (مالک پایگاه کافی است).
       await tx.execute(sql`CREATE EXTENSION IF NOT EXISTS btree_gist`);
-      await tx.execute(sql`CREATE SCHEMA IF NOT EXISTS ${sql.identifier(schema)}`);
+      await ensureSchema(tx, schema);
       await tx.execute(sql`CREATE TABLE IF NOT EXISTS ${tableRef(schema, "migration_ledger")} (
         name text NOT NULL,
         checksum text NOT NULL,
