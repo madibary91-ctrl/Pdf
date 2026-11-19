@@ -172,6 +172,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "metering",
   "settlement",
   "settlement-runtime",
+  "settlement-host",
   "ai-orchestrator",
   "doc-templates-core",
   "legal-kb-ingest",
