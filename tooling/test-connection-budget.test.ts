@@ -70,6 +70,7 @@ describe("tooling · بودجهٔ اتصال آزمون‌ها (اسکنر)", ()
       "src/modules/legal-kb-store/test-db.ts",
       "src/modules/metering/test-db.ts",
       "src/modules/retrieval/test-db.ts",
+      "src/modules/settlement-backlog/test-db.ts",
       "src/modules/settlement-runtime/test-db.ts",
       "src/modules/settlement/pg/test-db.ts",
       "src/modules/settlement/test-db.ts",
