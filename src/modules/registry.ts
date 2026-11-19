@@ -71,6 +71,7 @@ export const MODULES: readonly ModuleInfo[] = [
   m("calc-tools", 3, 6, "ابزار محاسبه برای مدل", "ابزارهایی که مدل برای محاسبه صدا می‌زند", ["legal-calc"], true, false),
   m("metering", 4, 8, "اندازه‌گیری مصرف", "رزرو بدترین هزینه، مصرف هزینهٔ واقعی و بازگشت/سوخت باقیمانده روی دفتر اعتبار برای هر تماس مدل", ["ai-gateway", "ledger"], false, true),
   m("settlement", 4, 8, "تسویهٔ ماندگار", "outbox و رفتگر: قصدِ تسویه پیش از هر تغییرِ دفتر ثبت می‌شود و رزروهای معلق یا یتیمِ مرگ/شکست با تکرارِ idempotent بسته می‌شوند", ["ledger", "metering"], false, true),
+  m("settlement-runtime", 5, 8, "اجرای تسویهٔ ماندگار", "ریشهٔ ترکیبِ رفتگر: زمان‌سنجِ واقعی، پیش‌بازرسیِ مهاجرت، چرخهٔ عمرِ مرتب (start/stop) و سلامتِ همگام برای پروبِ /api/health؛ سیاست‌ها در settlement می‌مانند", ["settlement", "ledger"], false, true),
   m("ai-orchestrator", 4, 7, "ارکستراتور", "خط لولهٔ کامل هر درخواست: زمینه، بازیابی، تولید، راستی‌آزمایی، ثبت", ["ai-gateway", "retrieval", "citation-verifier", "calc-tools", "doc-templates-core", "ledger"], false, true),
   m("api", 4, 8, "API اصلی", "حساب، اشتراک، میز کار وب، فایل‌ها، لایسنس", ["identity", "ledger", "ai-orchestrator"], false, true),
   m("web-app", 5, 9, "وب‌اپ", "رابط وب مستقل", ["api", "ui-rtl"], false, false),

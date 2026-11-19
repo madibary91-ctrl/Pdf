@@ -171,6 +171,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   // ADR-0027: شکافِ registry ⇒ regex (هر ۱۱ ماژولِ humanReview:true که بیرون مانده بودند)
   "metering",
   "settlement",
+  "settlement-runtime",
   "ai-orchestrator",
   "doc-templates-core",
   "legal-kb-ingest",
