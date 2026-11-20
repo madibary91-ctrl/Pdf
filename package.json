@@ -8,7 +8,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "settlement:migrate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tooling/cli/register.mjs tooling/cli/settlement-migrate.ts"
+    "settlement:migrate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tooling/cli/register.mjs tooling/cli/settlement-migrate.ts",
+    "backlog:cost": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tooling/cli/register.mjs tooling/cli/backlog-cost.ts"
   },
   "dependencies": {
     "@fontsource-variable/vazirmatn": "^5.3.0",
