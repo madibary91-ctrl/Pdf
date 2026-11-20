@@ -8,7 +8,7 @@ import { createLedger, createPgAccountStore } from "@/modules/ledger";
 import { createDurableLedger } from "@/modules/settlement";
 import { createNodeTimer, createPgSettlementRuntime, createSystemClock } from "./index";
 import type { PgSettlementRuntime } from "./index";
-import { KEY, UNIT, WORST, manualTimer, must, reserveInput } from "./test-kit";
+import { KEY, SMOKE_GRACE_MS, UNIT, WORST, healthDiagnostics, manualTimer, must, reserveInput } from "./test-kit";
 import type { ManualTimer } from "./test-kit";
 import { dbDescribe, openPg } from "./test-db";
 import type { TestPg } from "./test-db";
@@ -23,6 +23,14 @@ async function until(cond: () => Promise<boolean> | boolean, what: string, tries
     await sleep(4);
   }
   throw new Error(`انتظار برای «${what}» به پایان رسید`);
+}
+
+/** حلقهٔ رویداد را همگام و بی‌هیچ `await` می‌بندد؛ در این مدت هیچ تایمر/پاسخِ پایگاهی پردازش نمی‌شود (ADR-0041). */
+function blockEventLoop(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // انتظارِ فعال، عمداً.
+  }
 }
 
 dbDescribe("settlement-runtime · PostgreSQL", () => {
@@ -249,20 +257,76 @@ dbDescribe("settlement-runtime · PostgreSQL", () => {
 
   it("دودیِ زمانِ واقعی: ساعتِ سیستم + setTimeout (پیش‌فرض‌ها) رزروِ یتیم را می‌بندد و سلامت ok است", async () => {
     const t = await pg();
-    const rt = createPgSettlementRuntime({ db: t.db, ledgerSchema: t.ledgerSchema, settlementSchema: t.settlementSchema, graceMs: 120, deadLetters: false, timer: createNodeTimer() });
+    const rt = createPgSettlementRuntime({ db: t.db, ledgerSchema: t.ledgerSchema, settlementSchema: t.settlementSchema, graceMs: SMOKE_GRACE_MS, deadLetters: false, timer: createNodeTimer() });
     if (!rt.ok) throw new Error(rt.error.issues.join(";"));
     const run = rt.value;
     await migrated(run);
     must(await run.ports.ledger.openAccount({ ...KEY, unit: UNIT }));
     must(await run.ports.ledger.grant({ ...KEY, grantId: "g0", unit: UNIT, amount: 100_000, source: "purchase" }));
     const clock = createSystemClock();
-    const d = createDurableLedger({ ledger: run.ports.ledger, outbox: run.ports.outbox, clock, graceMs: 120, onUnknownCost: "forfeit" });
+    const d = createDurableLedger({ ledger: run.ports.ledger, outbox: run.ports.outbox, clock, graceMs: SMOKE_GRACE_MS, onUnknownCost: "forfeit" });
     if (!d.ok) throw new Error("durable");
     must(await d.value.reserve(reserveInput("r1")));
     expect((await run.start()).started).toBe(true);
     await until(async () => (must(await run.ports.ledger.balance(KEY)) as { held: number }).held === 0, "بسته‌شدنِ رزرو با زمانِ واقعی", 1500);
     expect(must(await run.ports.ledger.balance(KEY))).toMatchObject({ held: 0, totals: { forfeited: WORST } });
-    expect(run.health().health.status).toBe("ok");
+    expect(run.health().health.status, healthDiagnostics(run)).toBe("ok");
     expect(await run.stop()).toEqual({ clean: true });
+  });
+
+  // --- ADR-0041: بازتولیدِ قطعیِ علتِ ناپایداریِ دودیِ زمانِ واقعی (ساعت و زمان‌سنجِ واقعی؛ توقفِ حلقهٔ رویداد قطعی ساخته می‌شود) ---
+  const STALL_MS = 100;
+
+  async function startedReal(graceMs: number): Promise<PgSettlementRuntime> {
+    const t = await pg();
+    const rt = createPgSettlementRuntime({ db: t.db, ledgerSchema: t.ledgerSchema, settlementSchema: t.settlementSchema, graceMs, deadLetters: false, timer: createNodeTimer() });
+    if (!rt.ok) throw new Error(rt.error.issues.join(";"));
+    const run = rt.value;
+    await migrated(run);
+    expect((await run.start()).started).toBe(true);
+    cleanups.push(async () => void (await run.stop()));
+    return run;
+  }
+
+  /** تا لحظه‌ای که دست‌کم دو گذرِ موفق تمام شده و گذرِ جاری بیکار است؛ پس از بازگشت تا بلوکِ بعدی هیچ `await`ی نیست. */
+  async function untilIdleAfterSuccess(run: PgSettlementRuntime): Promise<void> {
+    await until(() => {
+      const l = run.status().loop;
+      return l.runs >= 2 && !l.busy && l.lastSuccessAtMs !== null && l.consecutiveFailures === 0;
+    }, "دو گذرِ موفقِ رفتگر", 3000);
+  }
+
+  it("توقفِ حلقهٔ رویداد با graceMs=۱۲۰: یک توقفِ ۱۰۰ms سلامت را قطعاً از ok خارج می‌کند، با علتِ STALE_SUCCESS (ریشهٔ ناپایداریِ قدیمی)", async () => {
+    const run = await startedReal(120);
+    await untilIdleAfterSuccess(run);
+    blockEventLoop(STALL_MS);
+    const h = run.health();
+    const line = healthDiagnostics(run);
+    expect(h.health.status, line).not.toBe("ok");
+    expect(h.health.reasons.map((r) => r.code), line).toContain("STALE_SUCCESS");
+    expect(h.health.silenceMs as number, line).toBeGreaterThanOrEqual(STALL_MS);
+    expect(h.health.degradedAfterMs).toBe(60);
+    expect(line).toContain("STALE_SUCCESS");
+    // کنترلِ منفی: توقف دائمی نیست؛ پس از پایانش حلقه خودش بهبود می‌یابد و سلامت دوباره ok می‌شود.
+    await until(() => run.health().health.status === "ok", "بازگشتِ سلامت به ok پس از پایانِ توقف", 1000);
+  });
+
+  it("توقفِ حلقهٔ رویداد با graceMs=SMOKE_GRACE_MS: همان توقفِ ۱۰۰ms تحمل می‌شود و سلامت ok می‌ماند", async () => {
+    const run = await startedReal(SMOKE_GRACE_MS);
+    await untilIdleAfterSuccess(run);
+    blockEventLoop(STALL_MS);
+    const h = run.health();
+    const line = healthDiagnostics(run);
+    expect(h.health.status, line).toBe("ok");
+    expect(h.health.reasons, line).toEqual([]);
+    expect(h.health.silenceMs as number, line).toBeGreaterThanOrEqual(STALL_MS);
+    expect(h.health.silenceMs as number, line).toBeLessThan(h.health.degradedAfterMs);
+  });
+
+  it("توقفِ حلقهٔ رویداد بیش از graceMs کامل ⇒ down و ۵۰۳ (حاشیه بی‌نهایت نیست؛ شکستِ بسته می‌ماند)", async () => {
+    const run = await startedReal(120);
+    await untilIdleAfterSuccess(run);
+    blockEventLoop(160);
+    expect(run.health(), healthDiagnostics(run)).toMatchObject({ httpStatus: 503, health: { status: "down" } });
   });
 });

@@ -151,3 +151,78 @@ export function tracedOutbox(real: SettlementOutbox, plan: OutboxPlan = {}) {
 export async function orphan(w: World, id: string): Promise<void> {
   must(await w.durable.reserve(reserveInput(id)));
 }
+
+/**
+ * `graceMs`ِ دودیِ زمانِ واقعی (ساعتِ سیستم + `setTimeout`) در `runtime.pg.test.ts` (ADR-0041).
+ * آستانهٔ `degraded` ⇒ ⌊graceMs/2⌋ و فاصلهٔ گذرها ⌊graceMs/4⌋ است؛ «حاشیهٔ تحملِ توقفِ حلقهٔ رویداد» = اختلافِ این دو.
+ * با ۱۲۰ms این حاشیه فقط ۳۰ms بود و یک وقفهٔ ۱۰۰–۲۰۰ms (زیرِ بارِ دروازه) سلامت را `degraded/down` می‌کرد؛ با ۱٬۲۰۰ms حاشیه ۳۰۰ms است.
+ * هزینه: حدودِ یک ثانیهٔ بیشتر در همان یک آزمون. پایین‌آوردنش را `health-diagnostics.test.ts` قرمز می‌کند.
+ */
+export const SMOKE_GRACE_MS = 1_200;
+
+const SAFE_UPPER = /^[A-Z][A-Z0-9_]{0,39}$/;
+const SAFE_LOWER = /^[a-z]{1,20}$/;
+const asRecord = (v: unknown): Record<string, unknown> | null => (typeof v === "object" && v !== null ? (v as Record<string, unknown>) : null);
+/** خواندنِ یک کلید که خرابیِ getter/Proxy فقط همان فیلد را `?` می‌کند، نه کلِ خلاصه را. */
+const pick = (o: Record<string, unknown> | null, key: string): unknown => {
+  try {
+    return o === null ? undefined : o[key];
+  } catch {
+    return undefined;
+  }
+};
+const fmtNum = (v: unknown): string => (typeof v === "number" && Number.isFinite(v) ? String(v) : "?");
+const fmtBool = (v: unknown): string => (v === true ? "true" : v === false ? "false" : "?");
+const fmtUpper = (v: unknown): string => (v === null ? "null" : typeof v === "string" && SAFE_UPPER.test(v) ? v : "?");
+const fmtLower = (v: unknown): string => (typeof v === "string" && SAFE_LOWER.test(v) ? v : "?");
+
+/**
+ * خلاصهٔ تک‌خطیِ «چرا سلامت ok نیست» برای پیامِ شکستِ آزمون‌ها (ADR-0041)؛ علت را از حدس به داده می‌رساند.
+ * ناورداها: هرگز نمی‌پرتابد (getter/Proxy/ورودیِ خراب ⇒ `?`)؛ هر متد دقیقاً یک بار خوانده می‌شود (یک عکسِ هم‌زمان)؛
+ * فقط فیلدهای فهرستِ سفید با الگوی بسته (کدهای شمارشی و عدد) می‌آیند، هیچ رشتهٔ آزاد/پیام/شناسه نشت نمی‌کند؛ حداکثر ۸ دلیل.
+ */
+export function healthDiagnostics(rt: { health(): unknown; status(): unknown }): string {
+  try {
+    let hr: Record<string, unknown> | null = null;
+    let st: Record<string, unknown> | null = null;
+    try {
+      hr = asRecord(rt.health());
+    } catch {
+      hr = null;
+    }
+    try {
+      st = asRecord(rt.status());
+    } catch {
+      st = null;
+    }
+    const h = asRecord(pick(hr, "health"));
+    const loop = asRecord(pick(st, "loop"));
+    const rawReasons = pick(h, "reasons");
+    const reasons = Array.isArray(rawReasons)
+      ? `[${rawReasons
+          .slice(0, 8)
+          .map((r) => {
+            const x = asRecord(r);
+            return `${fmtUpper(pick(x, "code"))}:${fmtLower(pick(x, "severity"))}`;
+          })
+          .join(",")}${rawReasons.length > 8 ? ",…" : ""}]`
+      : "?";
+    const silence = pick(h, "silenceMs");
+    return [
+      `health=${fmtLower(pick(h, "status"))}`,
+      `http=${fmtNum(pick(hr, "httpStatus"))}`,
+      `reasons=${reasons}`,
+      `silenceMs=${silence === null ? "null" : fmtNum(silence)}`,
+      `degradedAfterMs=${fmtNum(pick(h, "degradedAfterMs"))}`,
+      `downAfterMs=${fmtNum(pick(h, "downAfterMs"))}`,
+      `lastFault=${fmtUpper(pick(h, "lastFault"))}`,
+      `runtimeState=${fmtLower(pick(st, "state"))}`,
+      `loopState=${fmtLower(pick(loop, "state"))}`,
+      `busy=${fmtBool(pick(loop, "busy"))}`,
+      `runs=${fmtNum(pick(loop, "runs"))}`,
+      `consecutiveFailures=${fmtNum(pick(loop, "consecutiveFailures"))}`,
+    ].join(" ");
+  } catch {
+    return "healthDiagnostics: unreadable";
+  }
+}

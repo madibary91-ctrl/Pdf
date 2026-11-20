@@ -27,7 +27,9 @@ await rt.value.stop();               // { clean }
 `createSettlementRuntime`، `createPgSettlementRuntime`، `createNodeTimer({ unref? })` (تأخیرِ نامعتبر می‌پرتابد)، `createSystemClock(now?)`، `SETTLEMENT_RUNTIME_LIMITS` + نوع‌ها.
 
 ## آزمون‌ها
-`node-timer.test.ts`، `clock.test.ts`، `config.test.ts` (مرز و پیش‌فرض‌ها)، `runtime.test.ts` (چرخهٔ عمر، پیش‌بازرسی، سلامت، پول، زنگ؛ حافظه و زمانِ مجازی)، `pg-runtime.unit.test.ts` (بی‌پایگاه: اعتبارسنجی و نگاشتِ SQLSTATE)، `runtime.pg.test.ts` (PostgreSQL واقعی)، `purity.test.ts` (نگهبانِ منبع). جهشی: `python3 tooling/mutation/settlement-runtime.py`.
+`node-timer.test.ts`، `clock.test.ts`، `config.test.ts` (مرز و پیش‌فرض‌ها)، `runtime.test.ts` (چرخهٔ عمر، پیش‌بازرسی، سلامت، پول، زنگ؛ حافظه و زمانِ مجازی)، `pg-runtime.unit.test.ts` (بی‌پایگاه: اعتبارسنجی و نگاشتِ SQLSTATE)، `runtime.pg.test.ts` (PostgreSQL واقعی؛ شاملِ دودیِ زمانِ واقعی با `SMOKE_GRACE_MS` و سه آزمونِ توقفِ قطعیِ حلقهٔ رویداد)، `health-diagnostics.test.ts` (پیامِ شکستِ تشخیصیِ `healthDiagnostics` و قفلِ حاشیهٔ زمانی؛ ADR-0041)، `purity.test.ts` (نگهبانِ منبع). جهشی: `python3 tooling/mutation/settlement-runtime.py`. جهشیِ تشخیص: `python3 tooling/mutation/health-diagnostics.py`.
+
+**نکتهٔ آزمون‌نویسی (ADR-0041):** آستانهٔ `degraded` نصفِ `graceMs` و فاصلهٔ گذرها یک‌چهارم است؛ آزمونِ ساعتِ واقعی با `graceMs` کوچک (مثلاً ۱۲۰ms) فقط ۳۰ms حاشیه دارد و زیرِ بار ناپایدار می‌شود. از `SMOKE_GRACE_MS` (در `test-kit.ts`) استفاده کنید و در ادعای سلامت `healthDiagnostics(run)` را پیام بدهید.
 
 ## محدودیت‌ها
 خودِ ماژول به Next وصل نیست؛ اتصال به `src/app` (`instrumentation` و پروب‌های `/api/health/{live,ready,startup}`) را `settlement-bootstrap` انجام می‌دهد (م۳‑ه‑۳، ADR-0033)؛ مهاجرتِ صریح: `npm run settlement:migrate -- up` (ADR-0034)؛ `deliver`ِ واقعی و پایشِ پسماندِ زنگ نیست (م۳‑ه‑۴)؛ `graceMs` باید دستی با دفترِ ماندگار یکی باشد؛ پیش‌بازرسی فقط در `start`.
