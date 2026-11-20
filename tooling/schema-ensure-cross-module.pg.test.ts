@@ -22,6 +22,7 @@ import { expect, it } from "vitest";
 import { createKbStore, searchSchemaName } from "@/modules/legal-kb-store";
 import { createPgAccountStore } from "@/modules/ledger";
 import { createPgSettlementOutbox } from "@/modules/settlement";
+import { waitForCanonicalWait } from "./lock-wait";
 
 config({ quiet: true });
 const DB_URL: string | undefined = process.env["KB_TEST_DATABASE_URL"] ?? process.env["DATABASE_URL"];
@@ -98,14 +99,19 @@ async function waitingKeys(admin: Client, pid: number, key: string): Promise<rea
   return r.rows.map((x: { is_canonical: boolean }) => x.is_canonical);
 }
 
-/** صبر تا بک‌اند پشتِ یک قفلِ مشورتی بماند؛ در غیر این صورت `null` (آزمون باید شکست بخورد، نه سبزِ تهی). */
-async function waitUntilBlocked(admin: Client, pid: number, key: string): Promise<readonly boolean[] | null> {
-  for (let i = 0; i < 500; i++) {
-    const w = await waitingKeys(admin, pid, key);
-    if (w.length > 0) return w;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  return null;
+/**
+ * صبر تا بک‌اند پشتِ **قفلِ کانونی** بماند؛ در غیر این صورت `null` (آزمون باید شکست بخورد، نه سبزِ تهی).
+ * انتظارِ گذرا پشتِ قفلِ سراسریِ ماژول (فایلِ آزمونِ دیگری هم‌زمان مهاجرت می‌زند) تحمل می‌شود؛ منطق و دلیل: `tooling/lock-wait.ts` (ADR-0040).
+ * اگر هیچ‌گاه کانونی نشد، آخرین مشاهدهٔ غیرِ تهی برمی‌گردد و ادعای «دقیقاً [true]» همچنان قرمز می‌شود.
+ */
+function waitUntilBlocked(admin: Client, pid: number, key: string): Promise<readonly boolean[] | null> {
+  return waitForCanonicalWait({
+    probe: () => waitingKeys(admin, pid, key),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    pollMs: 10,
+    idlePolls: 500, // ≈۵ث بدونِ هیچ انتظاری ⇒ null (همان کرانِ پیشین)
+    transientPolls: 2000, // ≈۲۰ث تحملِ انتظارِ گذرا پشتِ کلیدِ دیگر (زیرِ مهلتِ ۶۰ث آزمون)
+  });
 }
 
 async function dropAll(admin: Client, base: string): Promise<void> {
