@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import * as api from "./index";
 
 const DIR = __dirname;
+/** ADR-0043: `settlement` (فقط برای ساختنِ outboxِ PostgreSQL) و `settlement-backlog-watch` افزوده شدند؛ هیچ مسیرِ داخلی و هیچ ماژولِ دیگری مجاز نشد. */
+const ALLOWED_IMPORTS: readonly string[] = ["@/modules/settlement-host", "@/modules/settlement-runtime", "@/modules/settlement", "@/modules/settlement-backlog-watch"];
 const NON_PRODUCT = new Set(["test-kit.ts"]);
 const strip = (c: string): string => c.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
 const sources = readdirSync(DIR)
@@ -40,11 +42,11 @@ describe("settlement-bootstrap · نگهبان منبع", () => {
     for (const s of sources) expect(s.code, s.name).not.toMatch(/\b(Date|setTimeout|clearTimeout|setInterval|setImmediate|queueMicrotask)\b/);
   });
 
-  it("importها فقط: رابط عمومیِ settlement-host و settlement-runtime و فایل‌های نسبیِ همین ماژول", () => {
+  it("importها فقط: رابط عمومیِ settlement-host، settlement-runtime، settlement و settlement-backlog-watch و فایل‌های نسبیِ همین ماژول", () => {
     for (const s of sources) {
       for (const m of s.code.matchAll(/from\s+["']([^"']+)["']/g)) {
         const spec = m[1] as string;
-        expect(spec === "@/modules/settlement-host" || spec === "@/modules/settlement-runtime" || /^\.\/[a-z-]+$/.test(spec), `${s.name}: ${spec}`).toBe(true);
+        expect(ALLOWED_IMPORTS.includes(spec) || /^\.\/[a-z-]+$/.test(spec), `${s.name}: ${spec}`).toBe(true);
       }
       expect(s.code, s.name).not.toMatch(/\b(drizzle-orm|@\/db|node:)/);
       expect(s.code, s.name).not.toMatch(/from\s+["']pg["']/);

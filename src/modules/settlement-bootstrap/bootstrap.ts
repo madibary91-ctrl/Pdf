@@ -3,12 +3,18 @@
  *  ۱. پیکربندی را روی مرز می‌سنجد؛ ۲. env را شکست‌بسته می‌خواند (`off` پیش‌فرض است)؛
  *  ۳. فقط وقتی `on` و معتبر است و میزبانی از پیش نیست، پایگاه را (تنبل) باز می‌کند؛ ۴. runtime و host می‌سازد و singleton می‌کند؛
  *  ۵. بوت را **بدون انتظار** آغاز می‌کند (سرور نباید پشتِ پایگاهِ کُند منتظر بماند؛ پروبِ startup همین را می‌گوید).
+ *  ۶. (ADR-0043) فقط با `SETTLEMENT_BACKLOG_WATCH=on`: پایشِ زندهٔ پسماندِ زنگ را روی **همان** پایگاه و **همان** زمان‌سنج/ساعتِ رفتگر می‌سازد، در ظرف ثبت می‌کند
+ *     (پروب‌ها از آن می‌خوانند)، با رویدادِ `booted` (بوتِ موفق، حتی دستیِ پس از شکست) شروع می‌کند و با `shutdown.started` (و تکیه‌گاهِ دوم در `closeResources`، پیش از بستنِ پایگاه) متوقف می‌کند.
  * هرگز نمی‌پرتابد و هرگز رد نمی‌شود. لاگ فقط رویدادِ بسته است: نه مقدارِ env، نه پیامِ خطای پایگاه (ممکن است رشتهٔ اتصال داشته باشد).
  */
 import { acquireSettlementHost, createNodeExit, createNodeSignalSource, createSettlementHost, getSettlementHost } from "@/modules/settlement-host";
 import type { HostBootResult } from "@/modules/settlement-host";
-import { createNodeTimer, createPgSettlementRuntime } from "@/modules/settlement-runtime";
+import { createNodeTimer, createPgSettlementRuntime, createSystemClock } from "@/modules/settlement-runtime";
+import { SETTLEMENT_DEFAULT_SCHEMA, createPgSettlementOutbox } from "@/modules/settlement";
+import { createBacklogWatch } from "@/modules/settlement-backlog-watch";
+import type { BacklogReadyPolicy, BacklogWatch } from "@/modules/settlement-backlog-watch";
 import { parseBootstrapEnv } from "./env";
+import { BACKLOG_WATCH_STORE_KEY } from "./http";
 import type { BootstrapErrorCode, BootstrapEvent, BootstrapOutcome, OpenedDatabase, ProcessOwner } from "./types";
 
 /** کلیدِ نشانگرِ «بوت در جریان» روی ظرف (هم‌زمانیِ دو register یا HMR یک پایگاهِ اضافه باز نکند). */
@@ -111,12 +117,68 @@ async function run(cfg: Cfg): Promise<BootstrapOutcome> {
     return failure("RUNTIME_INVALID", runtime.error.issues);
   }
 
+  const timer = cfg.timer === undefined ? createNodeTimer() : cfg.timer;
+
+  // پایشِ زندهٔ پسماندِ زنگ (ADR-0043): فقط با کلیدِ صریح؛ هر نقصِ پیکربندی همین‌جا و پیش از ساختنِ میزبان شکست‌بسته است.
+  let watch: BacklogWatch | null = null;
+  let readyPolicy: BacklogReadyPolicy = "report";
+  if (settings.backlog !== undefined) {
+    const outbox = createPgSettlementOutbox(opened.db as never, { schema: settings.settlementSchema ?? SETTLEMENT_DEFAULT_SCHEMA });
+    if (!outbox.ok) {
+      await closeQuietly(opened);
+      return failure("BACKLOG_INVALID", ["settlementSchema برای پایشِ پسماند نامعتبر است."]);
+    }
+    const made = createBacklogWatch({ outbox: outbox.value, clock: createSystemClock(), timer, ...settings.backlog.overrides });
+    if (!made.ok) {
+      await closeQuietly(opened);
+      return failure("BACKLOG_INVALID", made.error.issues);
+    }
+    watch = made.value;
+    readyPolicy = settings.backlog.overrides["readyPolicy"] === "gate_down" ? "gate_down" : "report";
+  }
+  let closing = false;
+  let watchStarted = false;
+  const stopWatch = (): void => {
+    closing = true;
+    if (watch === null || !watchStarted) return;
+    watchStarted = false;
+    try {
+      watch.stop();
+    } catch {
+      // توقفِ پایش هرگز خاموشیِ میزبان را نمی‌شکند.
+    }
+    emit(cfg.log, { type: "bootstrap.backlog_watch", state: "stopped", readyPolicy });
+  };
+  const startWatch = (): void => {
+    try {
+      if (watch === null || closing) return;
+      if (watch.start().started) {
+        watchStarted = true;
+        emit(cfg.log, { type: "bootstrap.backlog_watch", state: "started", readyPolicy });
+      }
+    } catch {
+      // شروعِ پایش هرگز نتیجهٔ بوتِ میزبان را عوض نمی‌کند.
+    }
+  };
+  // چرخهٔ عمرِ پایش از رویدادهای میزبان می‌آید (نه از وعدهٔ بوتِ نخست): بوتِ موفقِ دستیِ بعد از شکست هم پایش را شروع می‌کند و آغازِ خاموشی آن را پیش از رفتگر می‌ایستاند.
+  const onHostEvent = (event: unknown): void => {
+    if (!isObj(event)) return;
+    if (event["type"] === "booted") startWatch();
+    else if (event["type"] === "shutdown.started") stopWatch();
+  };
+
   const hostConfig: Record<string, unknown> = {
     runtime: runtime.value,
-    timer: cfg.timer === undefined ? createNodeTimer() : cfg.timer,
+    timer,
     signals: cfg.signals === undefined ? createNodeSignalSource() : cfg.signals,
-    closeResources: () => opened.close(),
-    observer: (event: unknown) => emit(cfg.log, { type: "host", event: event as never }),
+    closeResources: () => {
+      stopWatch(); // پیش از بستنِ استخر: خواندنِ پایش پس از بسته‌شدنِ پایگاه نباید بماند.
+      return opened.close();
+    },
+    observer: (event: unknown) => {
+      emit(cfg.log, { type: "host", event: event as never });
+      onHostEvent(event);
+    },
   };
   // خروجِ فرایند فقط وقتی ما صاحبِ سیگنالیم؛ وگرنه Next خودش می‌بُرد و دو `exit` رقابت نمی‌کنند.
   if (cfg.processOwner === "host") hostConfig["exit"] = cfg.exit === undefined ? createNodeExit() : cfg.exit;
@@ -143,6 +205,15 @@ async function run(cfg: Cfg): Promise<BootstrapOutcome> {
     return Object.freeze({ status: "started" as const, created: false, host: acquired.value, booting: null });
   }
   emit(cfg.log, { type: "bootstrap.started", created: true, processOwner: cfg.processOwner });
+  if (watch !== null) {
+    try {
+      cfg.store[BACKLOG_WATCH_STORE_KEY] = watch;
+      if (cfg.store[BACKLOG_WATCH_STORE_KEY] !== watch) throw new TypeError("store");
+      emit(cfg.log, { type: "bootstrap.backlog_watch", state: "armed", readyPolicy });
+    } catch {
+      watch = null; // ثبت نشد ⇒ پروب‌ها نمی‌توانند ببینندش؛ نمونه‌گیریِ بی‌گزارش هزینه است بی‌سود.
+    }
+  }
   const booting: Promise<HostBootResult> = Promise.resolve(acquired.value.boot()).then(
     (r) => r,
     () => BOOT_CRASHED,

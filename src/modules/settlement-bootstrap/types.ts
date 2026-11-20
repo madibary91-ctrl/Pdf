@@ -3,10 +3,11 @@
  * سیاستِ محیط (env) ← ساختنِ runtime/host ← بوتِ بی‌مسدودی ← پاسخ‌های HTTP پروب.
  * چرخهٔ عمرِ فرایندی در settlement-host و سیاستِ پول/سلامت در settlement و settlement-runtime می‌ماند.
  */
+import type { BacklogEnvOverrides, BacklogReadyPolicy } from "@/modules/settlement-backlog-watch";
 import type { HostBootResult, HostEvent, SettlementHost, SignalSource } from "@/modules/settlement-host";
 
 /** پیام‌ها و کدها فقط نامِ متغیر/فیلد و کدِ بسته‌اند، هرگز مقدار (حتی اگر رشتهٔ اتصال یا کلید در متغیرِ اشتباه باشد). */
-export type BootstrapErrorCode = "INVALID_CONFIG" | "INVALID_ENV" | "STORE_INVALID" | "DATABASE_UNAVAILABLE" | "RUNTIME_INVALID" | "HOST_INVALID";
+export type BootstrapErrorCode = "INVALID_CONFIG" | "INVALID_ENV" | "STORE_INVALID" | "DATABASE_UNAVAILABLE" | "RUNTIME_INVALID" | "HOST_INVALID" | "BACKLOG_INVALID";
 
 /**
  * - `off`: پیش‌فرض و شکست‌بسته؛ هیچ رفتگری ساخته یا پایگاهی باز نمی‌شود.
@@ -22,6 +23,8 @@ export type BootstrapSettings =
       bootRetryDelayMs: number | null;
       ledgerSchema: string | null;
       settlementSchema: string | null;
+      /** فقط وقتی `SETTLEMENT_BACKLOG_WATCH=on` است (ADR-0043)؛ در حالتِ خاموش کلید اصلاً نیست. */
+      backlog?: Readonly<{ overrides: BacklogEnvOverrides }>;
     }>;
 
 export type EnvResult =
@@ -42,7 +45,9 @@ export type BootstrapEvent =
   | Readonly<{ type: "bootstrap.disabled" }>
   | Readonly<{ type: "bootstrap.started"; created: boolean; processOwner: ProcessOwner }>
   | Readonly<{ type: "bootstrap.failed"; code: BootstrapErrorCode; issues: readonly string[] }>
-  | Readonly<{ type: "host"; event: HostEvent }>;
+  | Readonly<{ type: "host"; event: HostEvent }>
+  /** `armed`: پایش ساخته و در ظرف ثبت شد؛ `started`: پس از بوتِ موفق شروع شد؛ `stopped`: با خاموشیِ میزبان متوقف شد. فقط سیاست، نه مقدارِ آستانه‌ها. */
+  | Readonly<{ type: "bootstrap.backlog_watch"; state: "armed" | "started" | "stopped"; readyPolicy: BacklogReadyPolicy }>;
 
 export type BootstrapOutcome =
   | Readonly<{ status: "disabled" }>
