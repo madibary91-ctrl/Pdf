@@ -54,3 +54,6 @@ export function GET(): Response { return probeHttpResponse(globalThis, "ready");
 
 ## محدودیت‌ها
 حالتِ `host` درخواست‌های HTTPِ در جریان را می‌بُرد و حالتِ `next` خاموشیِ ما را ناتمام می‌گذارد (ADR-0033 تصمیم ۴؛ توصیه: `NEXT_MANUAL_SIG_HANDLE=1` پشتِ orchestratorی که با `ready` ترافیک را برمی‌دارد). `deadLetters:false` تا `deliver`ِ واقعی (م۳‑ه‑۴). مهاجرت را این ماژول انجام نمی‌دهد (`start` هرگز مهاجرت نمی‌کند)؛ مهاجرتِ صریحِ زمانِ استقرار: `npm run settlement:migrate -- up` (CLIِ رسمیِ `settlement-migrate`، ADR-0034؛ اسکریپتِ موقتیِ smoke حذف شد، ADR-0038). drainِ مرحله‌ای نیست. فقط runtime «nodejs».
+
+## هزینهٔ پایش (پیش از `SETTLEMENT_BACKLOG_WATCH=on` در تولید)
+خواندنِ دوره‌ایِ پایش با شمارِ مرده‌های **تأییدشده** (که هرگز حذف نمی‌شوند) خطی رشد می‌کند. هزینه را با `npm run backlog:cost -- --format=text` روی کپیِ غیرتولیدی بسنجید؛ یافته‌ها و تصمیم: `docs/adr/0044-settlement-backlog-cost-measurement.md`.

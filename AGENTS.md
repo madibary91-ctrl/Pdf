@@ -20,6 +20,7 @@ node tooling/ci-tests.ts        # همان دروازهٔ CI: نیازمند پ�
 npx tsc --noEmit               # تایپ
 npm run build                  # ساخت
 node tooling/git-discipline.ts install   # یک‌بار پس از کلون: فعال‌سازی هوک‌های انضباط گیت
+npm run backlog:cost -- --format=text   # هزینهٔ خواندنِ پایشِ پسماند (پایگاهِ غیرتولیدی؛ ADR-0044)
 ```
 
 ## قواعد (خلاصه؛ جزئیات در ADR-0001)
