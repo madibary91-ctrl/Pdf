@@ -177,6 +177,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "settlement-migrate",
   "settlement-backlog",
   "settlement-backlog-watch",
+  "settlement-pending",
   "ai-orchestrator",
   "doc-templates-core",
   "legal-kb-ingest",
