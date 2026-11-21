@@ -4,14 +4,14 @@
  *  ۳. فقط وقتی `on` و معتبر است و میزبانی از پیش نیست، پایگاه را (تنبل) باز می‌کند؛ ۴. runtime و host می‌سازد و singleton می‌کند؛
  *  ۵. بوت را **بدون انتظار** آغاز می‌کند (سرور نباید پشتِ پایگاهِ کُند منتظر بماند؛ پروبِ startup همین را می‌گوید).
  *  ۶. (ADR-0043) فقط با `SETTLEMENT_BACKLOG_WATCH=on`: پایشِ زندهٔ پسماندِ زنگ را روی **همان** پایگاه و **همان** زمان‌سنج/ساعتِ رفتگر می‌سازد، در ظرف ثبت می‌کند
- *     (پروب‌ها از آن می‌خوانند)، با رویدادِ `booted` (بوتِ موفق، حتی دستیِ پس از شکست) شروع می‌کند و با `shutdown.started` (و تکیه‌گاهِ دوم در `closeResources`، پیش از بستنِ پایگاه) متوقف می‌کند.
+ *     (پروب‌ها از آن می‌خوانند؛ خواندنش در سمتِ پایگاه هم سقف دارد: مهلتِ پایش + فرجه، ADR-0045)، با رویدادِ `booted` (بوتِ موفق، حتی دستیِ پس از شکست) شروع می‌کند و با `shutdown.started` (و تکیه‌گاهِ دوم در `closeResources`، پیش از بستنِ پایگاه) متوقف می‌کند.
  * هرگز نمی‌پرتابد و هرگز رد نمی‌شود. لاگ فقط رویدادِ بسته است: نه مقدارِ env، نه پیامِ خطای پایگاه (ممکن است رشتهٔ اتصال داشته باشد).
  */
 import { acquireSettlementHost, createNodeExit, createNodeSignalSource, createSettlementHost, getSettlementHost } from "@/modules/settlement-host";
 import type { HostBootResult } from "@/modules/settlement-host";
 import { createNodeTimer, createPgSettlementRuntime, createSystemClock } from "@/modules/settlement-runtime";
 import { SETTLEMENT_DEFAULT_SCHEMA, createPgSettlementOutbox } from "@/modules/settlement";
-import { createBacklogWatch } from "@/modules/settlement-backlog-watch";
+import { SETTLEMENT_BACKLOG_WATCH_DEFAULTS, SETTLEMENT_BACKLOG_WATCH_LIMITS, createBacklogWatch } from "@/modules/settlement-backlog-watch";
 import type { BacklogReadyPolicy, BacklogWatch } from "@/modules/settlement-backlog-watch";
 import { parseBootstrapEnv } from "./env";
 import { BACKLOG_WATCH_STORE_KEY } from "./http";
@@ -19,6 +19,26 @@ import type { BootstrapErrorCode, BootstrapEvent, BootstrapOutcome, OpenedDataba
 
 /** کلیدِ نشانگرِ «بوت در جریان» روی ظرف (هم‌زمانیِ دو register یا HMR یک پایگاهِ اضافه باز نکند). */
 const INFLIGHT_KEY: unique symbol = Symbol.for("legal-platform.settlement-bootstrap.inflight");
+
+/**
+ * فرجهٔ سقفِ سمتِ پایگاه نسبت به مهلتِ پایش (ADR-0045): تایمرِ پایش **زودتر** شلیک می‌کند (نمونه ⇒ `TIMEOUT`، همان کدی که پایش درجا degraded می‌شود)
+ * و پایگاه کمی بعد همان پرسش را لغو می‌کند. اگر سقف برابر یا کمتر بود، رقابتِ دو مهلت گاه `LIST_FAILED` و گاه `TIMEOUT` می‌داد (کدِ نمونه ناپایدار).
+ * یک ثانیه = بیشینهٔ زمانی که پرسشِ رهاشده می‌تواند اتصالِ استخر را نگه دارد.
+ */
+export const BACKLOG_STATEMENT_GRACE_MS = 1_000;
+
+/**
+ * سقفِ `statement_timeout`ِ خواندنِ پایش = مهلتِ مؤثرِ پایش (env یا پیش‌فرض) + فرجه. مهلتِ نامعتبر ⇒ `undefined` (بی‌سقف): همان مهلت را
+ * `createBacklogWatch` شکست‌بسته رد می‌کند (BACKLOG_INVALID) و سیمی ساخته نمی‌شود، پس «بی‌سقف» هرگز به اجرا نمی‌رسد.
+ */
+export function backlogReadStatementTimeoutMs(overrides: Readonly<Record<string, unknown>>): number | undefined {
+  const raw = overrides["timeoutMs"];
+  // پیش‌فرض از ماژولِ watch خوانده می‌شود، نه سخت‌کد (نگهبانِ `backlog-source.test.ts`).
+  const dflt: number = SETTLEMENT_BACKLOG_WATCH_DEFAULTS.timeoutMs;
+  const timeoutMs = raw === undefined ? dflt : raw;
+  if (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > SETTLEMENT_BACKLOG_WATCH_LIMITS.maxTimeoutMs) return undefined;
+  return timeoutMs + BACKLOG_STATEMENT_GRACE_MS;
+}
 
 type Cfg = Readonly<{
   env: unknown;
@@ -123,7 +143,12 @@ async function run(cfg: Cfg): Promise<BootstrapOutcome> {
   let watch: BacklogWatch | null = null;
   let readyPolicy: BacklogReadyPolicy = "report";
   if (settings.backlog !== undefined) {
-    const outbox = createPgSettlementOutbox(opened.db as never, { schema: settings.settlementSchema ?? SETTLEMENT_DEFAULT_SCHEMA });
+    // نمونهٔ جدا از نمونهٔ رفتگر: سقفِ سمتِ پایگاه فقط روی خواندن‌های پایش می‌نشیند و هیچ نوشتنِ رفتگر را نمی‌گیرد (ADR-0045).
+    const readTimeoutMs = backlogReadStatementTimeoutMs(settings.backlog.overrides);
+    const outbox = createPgSettlementOutbox(opened.db as never, {
+      schema: settings.settlementSchema ?? SETTLEMENT_DEFAULT_SCHEMA,
+      ...(readTimeoutMs === undefined ? {} : { readStatementTimeoutMs: readTimeoutMs }),
+    });
     if (!outbox.ok) {
       await closeQuietly(opened);
       return failure("BACKLOG_INVALID", ["settlementSchema برای پایشِ پسماند نامعتبر است."]);
