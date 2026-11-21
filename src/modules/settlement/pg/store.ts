@@ -24,15 +24,57 @@ const conflict = (message: string) => outboxError("CONFLICT", message);
 const storeFailure = () => outboxError("STORE_FAILURE", "ذخیرهٔ outbox در دسترس نیست.");
 const isActive = (e: OutboxEntry): boolean => e.state === "open" || e.state === "settling";
 
-export function buildPgOutbox(db: LedgerDatabase, schema: string): PgSettlementOutbox {
+/**
+ * سقفِ زمانِ **سمتِ پایگاه** برای عملیاتِ فقط‌خواندنیِ آداپتور (ADR-0045، م۳‑ه‑۴‑الف‑۲‑۴‑آ).
+ *
+ * چرا: مهلتِ سمتِ برنامه (تایمرِ پایشِ پسماند) فقط **منتظر ماندن** را رها می‌کند؛ پرسشِ زیرین در پایگاه ادامه می‌دهد و یک اتصالِ استخر را
+ * می‌گیرد (تحویل ۰۰۴۳ بند ۵‑۵؛ ADR-0044 تصمیم ۶). `statement_timeout` همان پرسش را در خودِ PostgreSQL لغو می‌کند.
+ *
+ * طراحی:
+ *  - فقط `set_config('statement_timeout', …, is_local = true)` (= `SET LOCAL`): اثرش با پایانِ همان تراکنش (commit/rollback) تمام می‌شود، پس هرگز به
+ *    اتصالِ اشتراکیِ استخر و نوشتن‌های دیگر (رفتگر) نشت نمی‌کند. `SET` بی‌`LOCAL` ممنوع است.
+ *  - مقدار پارامترِ پیوندی است، نه الحاقِ رشته. بدونِ گزینه، هیچ دستورِ اضافه‌ای فرستاده نمی‌شود (رفتارِ امروز بی‌تغییر).
+ *  - فقط تراکنش‌های `read only` (فهرست‌ها، `counts`، `get`)؛ نوشتن‌ها (رفتگر، تأیید، ثبتِ شکست) هرگز سقف نمی‌گیرند: لغوِ نیمه‌راهِ یک نوشتنِ پول
+ *    ایمن است (تراکنش برمی‌گردد) ولی «شکستِ دروغینِ تسویه» می‌سازد و سیاستِ تلاشِ مجدد را می‌شکند.
+ */
+export const PG_READ_STATEMENT_TIMEOUT_LIMITS = Object.freeze({
+  minMs: 1,
+  /** دو ساعت: بالاتر از آن دیگر «سقف» نیست؛ با سقفِ مهلتِ پایش (یک ساعت) به‌علاوهٔ فرجه سازگار است. */
+  maxMs: 7_200_000,
+});
+
+/** `undefined` ⇒ بی‌سقف (`null`)؛ عددِ صحیحِ ۱ تا سقف ⇒ همان؛ هر چیزِ دیگر (حتی `null`) ⇒ INVALID_INPUT با پیامی که فقط نامِ گزینه را دارد. */
+export function parseReadStatementTimeout(value: unknown): PgStoreResult<number | null> {
+  if (value === undefined) return { ok: true, value: null };
+  const L = PG_READ_STATEMENT_TIMEOUT_LIMITS;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < L.minMs || value > L.maxMs) {
+    return {
+      ok: false,
+      error: { code: "INVALID_INPUT", message: `readStatementTimeoutMs باید عددِ صحیحِ ${L.minMs} تا ${L.maxMs} میلی‌ثانیه باشد.` },
+    };
+  }
+  return { ok: true, value };
+}
+
+/** باید **نخستین** دستورِ تراکنشِ فقط‌خواندنی باشد (سپرِ مهاجرت و پرسشِ اصلی هر دو زیرِ سقف‌اند). `is_local = true` ثابت است. */
+export async function boundStatementTime(tx: LedgerExecutor, ms: number): Promise<void> {
+  await tx.execute(sql`SELECT set_config('statement_timeout', ${String(ms)}, true)`);
+}
+
+export function buildPgOutbox(db: LedgerDatabase, schema: string, readStatementTimeoutMs: number | null = null): PgSettlementOutbox {
   const T = tableRef(schema, "settlement_outbox");
   const A = tableRef(schema, "settlement_dead_ack");
 
-  /** یک تراکنش با سپر مهاجرت؛ هر پرتاب (پایگاه، ردیفِ خراب) ⇒ `STORE_FAILURE` (پیام ثابت، بی‌جزئیات). */
+  /**
+   * یک تراکنش با سپر مهاجرت؛ هر پرتاب (پایگاه، ردیفِ خراب) ⇒ `STORE_FAILURE` (پیام ثابت، بی‌جزئیات).
+   * اگر `readStatementTimeoutMs` داده شده باشد، تراکنش‌های فقط‌خواندنی (و فقط آن‌ها) در سمتِ پایگاه سقفِ زمان می‌گیرند (ADR-0045)؛
+   * لغوِ پایگاه هم یک پرتاب است ⇒ همان `STORE_FAILURE` و تراکنش برمی‌گردد.
+   */
   async function run<R>(fn: (tx: LedgerExecutor) => Promise<OutboxResult<R>>, readOnly = false): Promise<OutboxResult<R>> {
     try {
       return await db.transaction(
         async (tx) => {
+          if (readOnly && readStatementTimeoutMs !== null) await boundStatementTime(tx, readStatementTimeoutMs);
           await assertCurrent(tx, schema);
           return fn(tx);
         },
@@ -316,5 +358,7 @@ export function createPgSettlementOutbox(db: LedgerDatabase, options: PgSettleme
   }
   const schema = parseSchemaName(options.schema ?? SETTLEMENT_DEFAULT_SCHEMA);
   if (!schema.ok) return schema;
-  return { ok: true, value: buildPgOutbox(db, schema.value) };
+  const readTimeout = parseReadStatementTimeout(options.readStatementTimeoutMs);
+  if (!readTimeout.ok) return readTimeout;
+  return { ok: true, value: buildPgOutbox(db, schema.value, readTimeout.value) };
 }

@@ -14,4 +14,12 @@ export type PgSettlementOutbox = SettlementOutbox &
     status(): Promise<PgStoreResult<PgMigrationStatus>>;
   }>;
 
-export type PgSettlementOutboxOptions = Readonly<{ schema?: string }>;
+export type PgSettlementOutboxOptions = Readonly<{
+  schema?: string;
+  /**
+   * سقفِ زمانِ سمتِ پایگاه (`statement_timeout`، فقط درونِ همان تراکنش) برای **عملیاتِ فقط‌خواندنی** (`listDead`، `listUnacknowledgedDead`، `counts`، `get`)،
+   * عددِ صحیحِ ۱ تا ۷٬۲۰۰٬۰۰۰ میلی‌ثانیه (ADR-0045). نبودنش = بی‌سقف (رفتارِ پیشین). نوشتن‌ها هرگز سقف نمی‌گیرند.
+   * برای نمونه‌ای که فقط پایش می‌خواند بگذارید (مثلاً مهلتِ پایش + فرجه)؛ برای نمونهٔ رفتگر نگذارید. رد شدنِ سقف ⇒ `STORE_FAILURE` (پیامِ ثابت).
+   */
+  readStatementTimeoutMs?: number;
+}>;
