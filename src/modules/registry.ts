@@ -68,7 +68,7 @@ export const MODULES: readonly ModuleInfo[] = [
   m("ai-gateway", 3, 6, "واسط مدل", "واسط یکسان مدل زبانی، ثبت مصرف و هزینه", ["shared-types"], false, false),
   m("retrieval", 3, 6, "بازیابی", "بازیابی ترکیبی از پایگاه دانش با فیلتر تاریخ اعتبار", ["legal-kb-store", "persian-text"], false, false, "done"),
   m("citation-verifier", 3, 6, "راستی‌آزمایی استناد", "تطبیق هر ارجاع با رکورد واقعی؛ حذف/علامت‌گذاری ارجاع نامعتبر", ["legal-kb-schema", "shared-types"], true, true, "done"),
-  m("calc-tools", 3, 6, "ابزار محاسبه برای مدل", "ابزارهایی که مدل برای محاسبه صدا می‌زند", ["legal-calc"], true, false),
+  m("calc-tools", 3, 6, "ابزار محاسبه برای مدل", "ابزارهایی که مدل برای محاسبه صدا می‌زند", ["legal-calc", "shared-types"], true, false),
   m("metering", 4, 8, "اندازه‌گیری مصرف", "رزرو بدترین هزینه، مصرف هزینهٔ واقعی و بازگشت/سوخت باقیمانده روی دفتر اعتبار برای هر تماس مدل", ["ai-gateway", "ledger"], false, true),
   m("settlement", 4, 8, "تسویهٔ ماندگار", "outbox و رفتگر: قصدِ تسویه پیش از هر تغییرِ دفتر ثبت می‌شود و رزروهای معلق یا یتیمِ مرگ/شکست با تکرارِ idempotent بسته می‌شوند", ["ledger", "metering"], false, true),
   m("settlement-runtime", 5, 8, "اجرای تسویهٔ ماندگار", "ریشهٔ ترکیبِ رفتگر: زمان‌سنجِ واقعی، پیش‌بازرسیِ مهاجرت، چرخهٔ عمرِ مرتب (start/stop) و سلامتِ همگام برای پروبِ /api/health؛ سیاست‌ها در settlement می‌مانند", ["settlement", "ledger"], false, true),
