@@ -12,7 +12,7 @@ DATABASE_URL=… npm run settlement:pending -- up --timeout-ms=120000   # نصب
 DATABASE_URL=… npm run settlement:pending -- verify                   # سنجشِ سنگینِ نمایه در برابر حقیقت؛ خروج ۹ اگر ناهمخوان
 DATABASE_URL=… npm run settlement:pending -- down --yes               # برگشتِ رسمیِ نصب (ADR-0048/0049)؛ بی‌--yes خطای آرگومان (۲)
 ```
-شِما فقط از env: `SETTLEMENT_OUTBOX_SCHEMA` (همان برنامه؛ نبودن/خالی = پیش‌فرض). **با همان فایلِ envِ برنامه می‌شود اجرا کرد**: متغیرهای پایشِ پسماند (`SETTLEMENT_BACKLOG_WATCH` و آستانه‌ها) شناخته‌اند (`settlement-migrate` آن‌ها را رد می‌کند؛ ADR-0047 یافتهٔ ۱). با `node --env-file=.env` هم می‌شود (CLI خودش `.env` نمی‌خواند). Node ≥ ۲۲٫۱۸.
+شِما فقط از env: `SETTLEMENT_OUTBOX_SCHEMA` (همان برنامه؛ نبودن/خالی = پیش‌فرض). **با همان فایلِ envِ برنامه می‌شود اجرا کرد**: متغیرهای پایشِ پسماند (`SETTLEMENT_BACKLOG_WATCH`، `SETTLEMENT_BACKLOG_SOURCE` (ADR-0051؛ مقدارش اینجا نادیده است) و آستانه‌ها) شناخته‌اند (`settlement-migrate` آن‌ها را رد می‌کند؛ ADR-0047 یافتهٔ ۱). با `node --env-file=.env` هم می‌شود (CLI خودش `.env` نمی‌خواند). Node ≥ ۲۲٫۱۸.
 
 **نصب اختیاری و بی‌اثر بر برنامه است:** تا `up` نزنید هیچ‌چیز در settlement عوض نمی‌شود. پس از `up` هر نوشتنِ `dead`/تأیید یک درج/حذفِ اضافه در همان تراکنش می‌گیرد (TRIGGER روی جدول‌های پول؛ ADR-0046). **الگوی نصب:** پنجرهٔ کم‌ترافیک ← `status` ← `up` ← (خودکار verify) ← `status`. اگر `up` خروج ۱۰ داد (قفل در ۱۵ثانیه به دست نیامد)، چیزی عوض نشده؛ بعداً دوباره بزنید.
 

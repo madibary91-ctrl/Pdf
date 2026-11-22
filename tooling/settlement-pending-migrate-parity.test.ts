@@ -22,7 +22,7 @@ const ON = { SETTLEMENT_HOST: "on", SETTLEMENT_GRACE_MS: "60000" };
 
 describe("tooling · همارزیِ settlement-pending-migrate ≡ settlement-bootstrap", () => {
   it("مجموعهٔ نام‌های SETTLEMENT_* یکی است: هفت متغیرِ اصلی + SETTLEMENT_BACKLOG_WATCH + آستانه‌های پایش", () => {
-    const bootstrapAll = [...Object.values(SETTLEMENT_BOOTSTRAP_ENV), "SETTLEMENT_BACKLOG_WATCH", ...Object.values(SETTLEMENT_BACKLOG_WATCH_ENV)].sort();
+    const bootstrapAll = [...Object.values(SETTLEMENT_BOOTSTRAP_ENV), "SETTLEMENT_BACKLOG_WATCH", "SETTLEMENT_BACKLOG_SOURCE", ...Object.values(SETTLEMENT_BACKLOG_WATCH_ENV)].sort();
     expect([...KNOWN_SETTLEMENT_ENV].sort()).toEqual(bootstrapAll);
   });
 

@@ -17,6 +17,7 @@ export const ENV_DATABASE_URL = "DATABASE_URL";
 export const ENV_LEDGER_SCHEMA = "SETTLEMENT_LEDGER_SCHEMA";
 export const ENV_OUTBOX_SCHEMA = "SETTLEMENT_OUTBOX_SCHEMA";
 export const ENV_BACKLOG_WATCH = "SETTLEMENT_BACKLOG_WATCH";
+export const ENV_BACKLOG_SOURCE = "SETTLEMENT_BACKLOG_SOURCE";
 const ENV_PREFIX = "SETTLEMENT_";
 
 /** نام‌های `SETTLEMENT_*`ی که CLI می‌پذیرد: دقیقاً مجموعهٔ settlement-bootstrap (آزمونِ همارزی در tooling قفلش می‌کند). */
@@ -29,6 +30,7 @@ export const KNOWN_SETTLEMENT_ENV: readonly string[] = Object.freeze([
   ENV_LEDGER_SCHEMA,
   ENV_OUTBOX_SCHEMA,
   ENV_BACKLOG_WATCH,
+  ENV_BACKLOG_SOURCE, // ADR-0051: همان فایلِ envِ برنامه (که `pending` را انتخاب می‌کند) باید با همین CLI نصب/راستی‌آزمایی شود؛ مقدارش اینجا نادیده است.
   ...Object.values(SETTLEMENT_BACKLOG_WATCH_ENV),
 ]);
 
