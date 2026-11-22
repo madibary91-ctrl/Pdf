@@ -154,7 +154,7 @@ dbDescribe("settlement-migrate · فرایندِ واقعی (npm run settlement:
     // منتظر می‌مانیم تا واقعاً پشتِ قفل برود (یک جلسهٔ منتظرِ قفل در pg_locks).
     let parked = false;
     for (let i = 0; i < 100 && !parked; i++) {
-      parked = ((await r.admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).rowCount ?? 0) > 0;
+      parked = ((await r.admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = ANY (SELECT hashtextextended(k, 0) FROM unnest($1::text[]) AS k)", [[`ledger:migrate:${r.ledgerSchema}`, `settlement:migrate:${r.settlementSchema}`]])).rowCount ?? 0) > 0;
       if (!parked) await new Promise((res) => setTimeout(res, 100));
     }
     expect(parked).toBe(true);
@@ -165,7 +165,7 @@ dbDescribe("settlement-migrate · فرایندِ واقعی (npm run settlement:
     await holder.query("SELECT pg_advisory_unlock_all()");
     let waiting = true;
     for (let i = 0; i < 100 && waiting; i++) {
-      waiting = ((await r.admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).rowCount ?? 0) > 0;
+      waiting = ((await r.admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = ANY (SELECT hashtextextended(k, 0) FROM unnest($1::text[]) AS k)", [[`ledger:migrate:${r.ledgerSchema}`, `settlement:migrate:${r.settlementSchema}`]])).rowCount ?? 0) > 0;
       if (waiting) await new Promise((res) => setTimeout(res, 100));
     }
     expect(waiting).toBe(false);
