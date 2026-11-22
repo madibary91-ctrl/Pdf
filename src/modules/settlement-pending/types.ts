@@ -34,9 +34,18 @@ export type PendingVerifyReport = Readonly<{
   stale: number;
 }>;
 
+/** نتیجهٔ برگشتِ نمایه: نامِ مهاجرت‌هایی که این بار برگردانده شدند (به ترتیبِ برگشت). `[]` = چیزی نصب نبود (idempotent). */
+export type PendingDownReport = Readonly<{ reverted: readonly string[] }>;
+
 export type PendingDeadIndex = Readonly<{
   /** مهاجرتِ نمایه را اعمال می‌کند (idempotent و هم‌زمان‌امن). پیش‌نیاز: مهاجرت‌های `settlement` اعمال شده‌اند. outbox خودش مهاجرت نمی‌کند. */
   migrate(): Promise<PgStoreResult<PgMigrationReport>>;
+  /**
+   * **برگشتِ رسمی** (ADR-0048): TRIGGERها، نگهبان، جدول و توابعِ نمایه و دفترِ مهاجرتِ آن را در یک تراکنش برمی‌دارد؛ پس از آن پایگاه مثلِ پیش از نصب است و `migrate()` دوباره نصب می‌کند.
+   * نصب‌نشده = بی‌کار. دفترِ دست‌کاری/ناشناخته ⇒ شکست‌بسته؛ `lock_timeout` ۱۵ثانیه (۵۵P03) ⇒ هیچ‌چیز عوض نمی‌شود. به رکوردهای outbox/تأیید دست نمی‌زند.
+   * قفلِ `ACCESS EXCLUSIVE` روی outbox و تأییدها را کوتاه (O(۱)) نگه می‌دارد ولی خواننده‌ها هم در آن فاصله منتظرند.
+   */
+  down(): Promise<PgStoreResult<PendingDownReport>>;
   /** فقط‌خواندنی: چه چیزی اعمال شده و چه چیزی معلق است. شِمای ناموجود = همه معلق. */
   status(): Promise<PgStoreResult<PgMigrationStatus>>;
   /** فقط‌خواندنیِ **سنگین** (O(مرده‌ها + تأییدها)): برای ابزارِ عملیاتی/پس از مهاجرت؛ نه برای حلقهٔ دوره‌ای. */

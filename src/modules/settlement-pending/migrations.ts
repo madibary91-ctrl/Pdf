@@ -108,6 +108,45 @@ const m0001: Migration = {
 
 export const MIGRATIONS: readonly Migration[] = [m0001];
 
+/**
+ * برگشتِ رسمیِ هر مهاجرت (ADR-0048، ب‑۲‑۲‑۱) — **نصبِ معکوس**؛ کلیدش نامِ مهاجرتِ `MIGRATIONS` است (آزمون: هر مهاجرت یک برگشت دارد و برعکس).
+ * برگشتِ یک مهاجرت **هرگز ویرایشِ آن مهاجرت نیست** (checksum اعمال‌شده دست‌نخورده می‌ماند)؛ مهاجرتِ تازه ⇒ برگشتِ تازه، در همین نگاشت.
+ *
+ * قواعد:
+ *  1. **همان قفل و همان ترتیب‌ِ نصب** (`SET LOCAL lock_timeout` ← `LOCK TABLE outbox, ack`): نویسنده‌ها یا هر دو را با هم می‌گیرند یا منتظرند ⇒ بدونِ ترتیبِ تازه.
+ *     قفل اینجا `ACCESS EXCLUSIVE` است چون `DROP TRIGGER` آن را می‌خواهد (نصب `SHARE ROW EXCLUSIVE` بود)؛ زمانِ نگهداشتنش O(۱) است (بی‌پیمایش و بی‌backfill)،
+ *     ولی **خواننده‌ها هم** در همین فاصله منتظرند (سقفِ انتظارِ آن‌ها statement_timeout خودشان است).
+ *  2. **هرگز `CASCADE`**: اگر شیئی (مثلاً یک view) به نمایه وابسته شده، `DROP` شکست می‌خورد و **کلِ تراکنش برمی‌گردد** — حذفِ بی‌صدای شیءِ دیگران ممنوع است.
+ *  3. `IF EXISTS`: برگشت باید بتواند **نصبِ ناقصِ دست‌خورده** (مثلاً TRIGGERِ حذف‌شده) را هم پاک کند؛ تشخیصِ ناهمخوانی کارِ `verify` است نه برگشت.
+ *  4. ترتیبِ حذف: TRIGGERهای روی outbox/ack (تا نویسنده دیگر چیزی در نمایه ننویسد) ← جدولِ نمایه (TRIGGERها و ایندکسش با آن می‌روند) ← توابع.
+ *  5. به `settlement_outbox`/`settlement_dead_ack` **داده‌ای نوشته یا حذف نمی‌شود**؛ فقط TRIGGERهای همین ماژول از رویشان برداشته می‌شوند.
+ */
+const ROLLBACKS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "0001_dead_pending": Object.freeze([
+    `SET LOCAL lock_timeout = '15s'`,
+    `LOCK TABLE ${S}.settlement_outbox, ${S}.settlement_dead_ack IN ACCESS EXCLUSIVE MODE`,
+
+    `DROP TRIGGER IF EXISTS settlement_pending_dead_ins ON ${S}.settlement_outbox`,
+    `DROP TRIGGER IF EXISTS settlement_pending_dead_upd ON ${S}.settlement_outbox`,
+    `DROP TRIGGER IF EXISTS settlement_pending_ack ON ${S}.settlement_dead_ack`,
+
+    // با جدول، نگهبان‌های BEFORE (درج/ویرایش/حذف و TRUNCATE) و ایندکسِ ترتیب هم می‌روند.
+    `DROP TABLE IF EXISTS ${S}.settlement_dead_pending`,
+
+    `DROP FUNCTION IF EXISTS ${S}.settlement_pending_on_dead()`,
+    `DROP FUNCTION IF EXISTS ${S}.settlement_pending_on_ack()`,
+    `DROP FUNCTION IF EXISTS ${S}.settlement_pending_guard()`,
+  ]),
+});
+
+/** دستورهای برگشتِ یک مهاجرتِ شناخته‌شده؛ مهاجرتِ بی‌برگشت `undefined` است (فراخوان باید شکست‌بسته رفتار کند). */
+export function rollbackStatements(name: string): readonly string[] | undefined {
+  return Object.hasOwn(ROLLBACKS, name) ? ROLLBACKS[name] : undefined;
+}
+
+/** نام‌های دارای برگشت (برای آزمونِ همخوانی با `MIGRATIONS`). */
+export const ROLLBACK_NAMES: readonly string[] = Object.freeze(Object.keys(ROLLBACKS));
+
 /** checksum محتوای مهاجرت (نام + دستورها)؛ تغییرِ مهاجرتِ اعمال‌شده با آن شناسایی می‌شود. */
 export function migrationChecksum(m: Migration): string {
   return createHash("sha256").update(JSON.stringify([m.name, m.statements])).digest("hex");

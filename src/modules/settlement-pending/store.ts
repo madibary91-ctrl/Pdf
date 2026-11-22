@@ -4,7 +4,7 @@
  */
 import type { LedgerDatabase, PgStoreResult } from "@/modules/ledger";
 import { SETTLEMENT_DEFAULT_SCHEMA } from "@/modules/settlement";
-import { migrate, migrationStatus } from "./migrate";
+import { down, migrate, migrationStatus } from "./migrate";
 import { parseSchemaName } from "./naming";
 import { buildPendingReader, parseReadStatementTimeout } from "./read";
 import type { PendingDeadIndex, PendingDeadIndexOptions } from "./types";
@@ -28,6 +28,7 @@ export function createPendingDeadIndex(db: LedgerDatabase, options: PendingDeadI
     ok: true,
     value: Object.freeze({
       migrate: () => migrate(db, schema.value),
+      down: () => down(db, schema.value),
       status: () => migrationStatus(db, schema.value),
       verify: reader.verify,
       listUnacknowledgedDead: reader.listUnacknowledgedDead,
