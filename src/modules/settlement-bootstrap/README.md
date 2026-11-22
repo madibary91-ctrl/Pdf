@@ -46,6 +46,14 @@ export function GET(): Response { return probeHttpResponse(globalThis, "ready");
 - **سقفِ سمتِ پایگاه (ADR-0045، الف‑۲‑۴‑آ):** پایش outboxِ **جدا از نمونهٔ رفتگر** می‌سازد و `readStatementTimeoutMs = مهلتِ مؤثرِ پایش (SETTLEMENT_BACKLOG_TIMEOUT_MS یا ۵ ثانیه) + ۱ ثانیه فرجه` می‌گذارد؛ تایمرِ پایش زودتر شلیک می‌کند (`SAMPLE_UNREADABLE`) و پایگاه همان پرسشِ رهاشده را کمی بعد لغو می‌کند (دیگر اتصالِ استخر را بی‌پایان نگه نمی‌دارد). نوشتن‌ها و نمونهٔ رفتگر هرگز سقف نمی‌گیرند.
 - محدودیت‌ها: هزینهٔ خواندن (هر ۳۰ ثانیه، ≤۱۰۰۰ ردیف) با تعدادِ مرده‌های تأییدشده خطی رشد می‌کند (الف‑۲‑۳؛ اصلاحِ ساختاری = الف‑۲‑۴‑ب)؛ پایش از همان استخرِ برنامه می‌خواند.
 
+### منبعِ خواندنِ پایش — `SETTLEMENT_BACKLOG_SOURCE` (م۳‑ه‑۴‑الف‑۲‑۴‑ب‑۲‑۳، ADR-0051)
+اختیاری و **پیش‌فرض `outbox`** (رفتارِ بالا بی‌تغییر). `SETTLEMENT_BACKLOG_SOURCE=pending` (فقط دقیقاً `outbox|pending`؛ هر مقدارِ دیگر و هر مقدارِ بی‌`SETTLEMENT_BACKLOG_WATCH=on` ⇒ `INVALID_ENV`) پایش را از **نمایهٔ مشتقِ** `settlement-pending` می‌خواند (هزینه O(تأییدنشده‌ها)، نه O(تأییدشده‌ها)؛ ADR-0044/0046).
+- همان پایگاه، شِما (`SETTLEMENT_OUTBOX_SCHEMA`) و سقفِ سمتِ پایگاهِ ADR-0045؛ هیچ outboxی برای پایش ساخته نمی‌شود. **هرگز بازگشتِ بی‌صدا به outbox:** نمایهٔ نصب‌نشده/برگشته ⇒ `degraded` با `SAMPLE_UNREADABLE` و `count:null` (نه `ok`)؛ پس از نصبِ دوباره بی‌ری‌استارت `ok` می‌شود. ساختنِ نمایه رد شود ⇒ `BACKLOG_INVALID`.
+- بوت نمایه را نه نصب می‌کند نه می‌سنجد و نتیجهٔ بوتِ رفتگر به آن وابسته نیست. نصب/راستی‌آزمایی: `npm run settlement:pending -- up` و `-- verify` (با همان envِ برنامه). **ترتیب:** نصب ← env ← استقرار؛ برگشت: ابتدا env را بردارید، بعد `down --yes`.
+- لاگ: `bootstrap.backlog_watch` فقط برای pending `source:"pending"` دارد؛ بدنهٔ HTTP بی‌تغییر است.
+- حدها: TRIGGERِ خاموش را پایش نمی‌بیند (`verify` می‌گیرد)؛ `SAMPLE_UNREADABLE` با `gate_down` ready را ۵۰۳ نمی‌کند (سیاستِ ADR-0043)؛ `settlement:migrate` هنوز متغیرهای پایش را نمی‌شناسد.
+آزمون‌ها: `env.source.test.ts` · `source.test.ts` (اسپای: فقط نمایه، شِما/سقف، بی‌بازگشت) · `source.pg.test.ts` (PostgreSQL واقعی) · `source.guard.test.ts` · جهشی: `tooling/mutation/settlement-bootstrap-source.py` · همارزی با CLI: `tooling/backlog-source-parity.test.ts`.
+
 ## صادرات
 `startSettlementBootstrap`، `parseBootstrapEnv`، `probeHttpResponse`، `SETTLEMENT_BOOTSTRAP_ENV` + نوع‌ها. (نامِ کلیدِ `SETTLEMENT_BACKLOG_WATCH` و `BACKLOG_WATCH_STORE_KEY` داخلی‌اند؛ ADR-0043.)
 

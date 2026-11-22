@@ -9,6 +9,9 @@
  *  - **پایشِ پسماندِ زنگ (ADR-0043):** کلیدِ `SETTLEMENT_BACKLOG_WATCH` (`on|off`، پیش‌فرض off و شکست‌بسته مثلِ `SETTLEMENT_HOST`) آن را روشن می‌کند؛ آستانه‌ها
  *    (`SETTLEMENT_BACKLOG_*`) فقط وقتی روشن است معنا دارند و خوانش‌شان به `parseBacklogWatchEnv` سپرده می‌شود. آستانهٔ تنظیم‌شده با کلیدِ خاموش خطاست
  *    (اپراتور فکر می‌کند `gate_down` فعال است ولی هیچ‌چیز مسدود نمی‌شود). کلیدِ `backlog` در نتیجه **فقط وقتی روشن است** می‌آید.
+ *  - **منبعِ خواندنِ پایش (ADR-0051):** `SETTLEMENT_BACKLOG_SOURCE` = `outbox` (پیش‌فرض؛ نبودن/خالی) | `pending` (نمایهٔ مشتقِ `settlement-pending`). هر مقدارِ دیگر (`PENDING`، `index`، `1`)
+ *    خطاست و **بی‌کلیدِ روشنِ پایش هم خطاست** (اپراتور فکر می‌کند پایش از نمایه می‌خواند ولی پایشی نیست). کلیدِ `backlog.source` **فقط برای `pending`** می‌آید؛ پیش‌فرض
+ *    (`outbox`) شکلِ نتیجه را بایت‌به‌بایت مثلِ پیش از ADR-0051 نگه می‌دارد.
  */
 import { SETTLEMENT_BACKLOG_WATCH_ENV, parseBacklogWatchEnv } from "@/modules/settlement-backlog-watch";
 import type { BacklogEnvOverrides } from "@/modules/settlement-backlog-watch";
@@ -23,9 +26,10 @@ export const ENV_BOOT_RETRY_DELAY_MS = "SETTLEMENT_BOOT_RETRY_DELAY_MS";
 export const ENV_LEDGER_SCHEMA = "SETTLEMENT_LEDGER_SCHEMA";
 export const ENV_OUTBOX_SCHEMA = "SETTLEMENT_OUTBOX_SCHEMA";
 export const ENV_BACKLOG_WATCH = "SETTLEMENT_BACKLOG_WATCH";
+export const ENV_BACKLOG_SOURCE = "SETTLEMENT_BACKLOG_SOURCE";
 
 const BACKLOG_NAMES: readonly string[] = Object.values(SETTLEMENT_BACKLOG_WATCH_ENV);
-const KNOWN: readonly string[] = [ENV_HOST, ENV_GRACE_MS, ENV_SHUTDOWN_TIMEOUT_MS, ENV_BOOT_ATTEMPTS, ENV_BOOT_RETRY_DELAY_MS, ENV_LEDGER_SCHEMA, ENV_OUTBOX_SCHEMA, ENV_BACKLOG_WATCH, ...BACKLOG_NAMES];
+const KNOWN: readonly string[] = [ENV_HOST, ENV_GRACE_MS, ENV_SHUTDOWN_TIMEOUT_MS, ENV_BOOT_ATTEMPTS, ENV_BOOT_RETRY_DELAY_MS, ENV_LEDGER_SCHEMA, ENV_OUTBOX_SCHEMA, ENV_BACKLOG_WATCH, ENV_BACKLOG_SOURCE, ...BACKLOG_NAMES];
 
 const DIGITS = /^[1-9][0-9]{0,9}$/;
 
@@ -72,7 +76,7 @@ export function parseBootstrapEnv(raw: unknown): EnvResult {
     if (watchRaw === undefined || watchRaw === "" || watchRaw === "off") watchOn = false;
     else if (watchRaw === "on") watchOn = true;
     else issues.push(`${ENV_BACKLOG_WATCH} باید on یا off باشد.`);
-    let backlog: Readonly<{ overrides: BacklogEnvOverrides }> | undefined;
+    let backlog: Readonly<{ overrides: BacklogEnvOverrides; source?: "pending" }> | undefined;
     if (watchOn) {
       const sub: Record<string, unknown> = {};
       for (const name of BACKLOG_NAMES) sub[name] = read(name);
@@ -84,6 +88,13 @@ export function parseBootstrapEnv(raw: unknown): EnvResult {
         const v = read(name);
         if (v !== undefined && v !== "") issues.push(`${name} تنظیم شده ولی ${ENV_BACKLOG_WATCH} روشن (on) نیست.`);
       }
+    }
+
+    const sourceRaw = read(ENV_BACKLOG_SOURCE);
+    if (sourceRaw !== undefined && sourceRaw !== "") {
+      if (sourceRaw !== "outbox" && sourceRaw !== "pending") issues.push(`${ENV_BACKLOG_SOURCE} باید outbox یا pending باشد.`);
+      else if (!watchOn) issues.push(`${ENV_BACKLOG_SOURCE} تنظیم شده ولی ${ENV_BACKLOG_WATCH} روشن (on) نیست.`);
+      else if (sourceRaw === "pending" && backlog !== undefined) backlog = Object.freeze({ ...backlog, source: "pending" as const });
     }
 
     const graceMs = intVar(ENV_GRACE_MS, true);

@@ -24,7 +24,11 @@ export type BootstrapSettings =
       ledgerSchema: string | null;
       settlementSchema: string | null;
       /** فقط وقتی `SETTLEMENT_BACKLOG_WATCH=on` است (ADR-0043)؛ در حالتِ خاموش کلید اصلاً نیست. */
-      backlog?: Readonly<{ overrides: BacklogEnvOverrides }>;
+      backlog?: Readonly<{
+        overrides: BacklogEnvOverrides;
+        /** ADR-0051: فقط `"pending"` (خواندن از نمایهٔ مشتقِ `settlement-pending`) نشانهٔ صریح دارد؛ نبودنِ کلید = outbox (پیش‌فرض). */
+        source?: "pending";
+      }>;
     }>;
 
 export type EnvResult =
@@ -46,8 +50,8 @@ export type BootstrapEvent =
   | Readonly<{ type: "bootstrap.started"; created: boolean; processOwner: ProcessOwner }>
   | Readonly<{ type: "bootstrap.failed"; code: BootstrapErrorCode; issues: readonly string[] }>
   | Readonly<{ type: "host"; event: HostEvent }>
-  /** `armed`: پایش ساخته و در ظرف ثبت شد؛ `started`: پس از بوتِ موفق شروع شد؛ `stopped`: با خاموشیِ میزبان متوقف شد. فقط سیاست، نه مقدارِ آستانه‌ها. */
-  | Readonly<{ type: "bootstrap.backlog_watch"; state: "armed" | "started" | "stopped"; readyPolicy: BacklogReadyPolicy }>;
+  /** `armed`: پایش ساخته و در ظرف ثبت شد؛ `started`: پس از بوتِ موفق شروع شد؛ `stopped`: با خاموشیِ میزبان متوقف شد. فقط سیاست، نه مقدارِ آستانه‌ها. `source` فقط برای منبعِ `pending` می‌آید (ADR-0051). */
+  | Readonly<{ type: "bootstrap.backlog_watch"; state: "armed" | "started" | "stopped"; readyPolicy: BacklogReadyPolicy; source?: "pending" }>;
 
 export type BootstrapOutcome =
   | Readonly<{ status: "disabled" }>

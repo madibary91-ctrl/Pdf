@@ -5,12 +5,16 @@
  *  ۵. بوت را **بدون انتظار** آغاز می‌کند (سرور نباید پشتِ پایگاهِ کُند منتظر بماند؛ پروبِ startup همین را می‌گوید).
  *  ۶. (ADR-0043) فقط با `SETTLEMENT_BACKLOG_WATCH=on`: پایشِ زندهٔ پسماندِ زنگ را روی **همان** پایگاه و **همان** زمان‌سنج/ساعتِ رفتگر می‌سازد، در ظرف ثبت می‌کند
  *     (پروب‌ها از آن می‌خوانند؛ خواندنش در سمتِ پایگاه هم سقف دارد: مهلتِ پایش + فرجه، ADR-0045)، با رویدادِ `booted` (بوتِ موفق، حتی دستیِ پس از شکست) شروع می‌کند و با `shutdown.started` (و تکیه‌گاهِ دوم در `closeResources`، پیش از بستنِ پایگاه) متوقف می‌کند.
+ *  ۷. (ADR-0051) فقط با `SETTLEMENT_BACKLOG_SOURCE=pending`: پایش از **نمایهٔ مشتقِ** `settlement-pending` می‌خواند (هزینه O(تأییدنشده‌ها) نه O(تأییدشده‌ها))، با همان سقفِ سمتِ پایگاه.
+ *     **هرگز بی‌صدا به outbox برنمی‌گردد:** نمایهٔ نصب‌نشده/برگشته ⇒ خواندن شکست می‌خورد ⇒ نمونه `SAMPLE_UNREADABLE`/`LIST_FAILED` (درجا degraded) و نه «ok»ی کاذب یا خواندنِ کُندِ ناخواسته.
+ *     بوت هرگز نمایه را نصب/بررسی نمی‌کند (نصب = `npm run settlement:pending -- up`) و نتیجهٔ بوتِ رفتگر هرگز به آن وابسته نیست.
  * هرگز نمی‌پرتابد و هرگز رد نمی‌شود. لاگ فقط رویدادِ بسته است: نه مقدارِ env، نه پیامِ خطای پایگاه (ممکن است رشتهٔ اتصال داشته باشد).
  */
 import { acquireSettlementHost, createNodeExit, createNodeSignalSource, createSettlementHost, getSettlementHost } from "@/modules/settlement-host";
 import type { HostBootResult } from "@/modules/settlement-host";
 import { createNodeTimer, createPgSettlementRuntime, createSystemClock } from "@/modules/settlement-runtime";
 import { SETTLEMENT_DEFAULT_SCHEMA, createPgSettlementOutbox } from "@/modules/settlement";
+import { createPendingDeadIndex } from "@/modules/settlement-pending";
 import { SETTLEMENT_BACKLOG_WATCH_DEFAULTS, SETTLEMENT_BACKLOG_WATCH_LIMITS, createBacklogWatch } from "@/modules/settlement-backlog-watch";
 import type { BacklogReadyPolicy, BacklogWatch } from "@/modules/settlement-backlog-watch";
 import { parseBootstrapEnv } from "./env";
@@ -142,13 +146,20 @@ async function run(cfg: Cfg): Promise<BootstrapOutcome> {
   // پایشِ زندهٔ پسماندِ زنگ (ADR-0043): فقط با کلیدِ صریح؛ هر نقصِ پیکربندی همین‌جا و پیش از ساختنِ میزبان شکست‌بسته است.
   let watch: BacklogWatch | null = null;
   let readyPolicy: BacklogReadyPolicy = "report";
+  /** نشانهٔ منبع در لاگ: فقط برای `pending` (پیش‌فرض ⇒ رویدادها بی‌تغییرند). */
+  const sourceTag: { source?: "pending" } = settings.backlog?.source === "pending" ? { source: "pending" } : {};
   if (settings.backlog !== undefined) {
     // نمونهٔ جدا از نمونهٔ رفتگر: سقفِ سمتِ پایگاه فقط روی خواندن‌های پایش می‌نشیند و هیچ نوشتنِ رفتگر را نمی‌گیرد (ADR-0045).
     const readTimeoutMs = backlogReadStatementTimeoutMs(settings.backlog.overrides);
-    const outbox = createPgSettlementOutbox(opened.db as never, {
+    const readOptions = {
       schema: settings.settlementSchema ?? SETTLEMENT_DEFAULT_SCHEMA,
       ...(readTimeoutMs === undefined ? {} : { readStatementTimeoutMs: readTimeoutMs }),
-    });
+    };
+    // منبعِ خواندن (ADR-0051): `pending` ⇒ نمایهٔ مشتق؛ وگرنه (پیش‌فرض) outboxِ PostgreSQL، بایت‌به‌بایت مثلِ پیش. هر دو همان پورتِ فقط‌خواندنیِ پایش‌اند و هیچ‌کدام دیگری را جایگزینِ خطا نمی‌کند.
+    const outbox =
+      settings.backlog.source === "pending"
+        ? createPendingDeadIndex(opened.db as never, readOptions)
+        : createPgSettlementOutbox(opened.db as never, readOptions);
     if (!outbox.ok) {
       await closeQuietly(opened);
       return failure("BACKLOG_INVALID", ["settlementSchema برای پایشِ پسماند نامعتبر است."]);
@@ -172,14 +183,14 @@ async function run(cfg: Cfg): Promise<BootstrapOutcome> {
     } catch {
       // توقفِ پایش هرگز خاموشیِ میزبان را نمی‌شکند.
     }
-    emit(cfg.log, { type: "bootstrap.backlog_watch", state: "stopped", readyPolicy });
+    emit(cfg.log, { type: "bootstrap.backlog_watch", state: "stopped", readyPolicy, ...sourceTag });
   };
   const startWatch = (): void => {
     try {
       if (watch === null || closing) return;
       if (watch.start().started) {
         watchStarted = true;
-        emit(cfg.log, { type: "bootstrap.backlog_watch", state: "started", readyPolicy });
+        emit(cfg.log, { type: "bootstrap.backlog_watch", state: "started", readyPolicy, ...sourceTag });
       }
     } catch {
       // شروعِ پایش هرگز نتیجهٔ بوتِ میزبان را عوض نمی‌کند.
@@ -234,7 +245,7 @@ async function run(cfg: Cfg): Promise<BootstrapOutcome> {
     try {
       cfg.store[BACKLOG_WATCH_STORE_KEY] = watch;
       if (cfg.store[BACKLOG_WATCH_STORE_KEY] !== watch) throw new TypeError("store");
-      emit(cfg.log, { type: "bootstrap.backlog_watch", state: "armed", readyPolicy });
+      emit(cfg.log, { type: "bootstrap.backlog_watch", state: "armed", readyPolicy, ...sourceTag });
     } catch {
       watch = null; // ثبت نشد ⇒ پروب‌ها نمی‌توانند ببینندش؛ نمونه‌گیریِ بی‌گزارش هزینه است بی‌سود.
     }
