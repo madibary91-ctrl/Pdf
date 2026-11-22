@@ -61,14 +61,14 @@ dbDescribe("settlement-pending-migrate down · فرایندِ واقعی (npm ru
     const ledger = async (): Promise<boolean> => (await admin.query(`SELECT to_regclass($1) IS NOT NULL AS p`, [`"${schema}".settlement_pending_migration_ledger`])).rows[0]?.["p"] === true;
     const parked = async (): Promise<boolean> => {
       for (let i = 0; i < 100; i++) {
-        if (((await admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).rowCount ?? 0) > 0) return true;
+        if (((await admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = ANY (SELECT hashtextextended(k, 0) FROM unnest($1::text[]) AS k)", [[`settlement:migrate:${schema}`, `settlement-pending:migrate:${schema}`]])).rowCount ?? 0) > 0) return true;
         await new Promise((res) => setTimeout(res, 100));
       }
       return false;
     };
     const drained = async (): Promise<boolean> => {
       for (let i = 0; i < 100; i++) {
-        if (((await admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).rowCount ?? 0) === 0) return true;
+        if (((await admin.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = ANY (SELECT hashtextextended(k, 0) FROM unnest($1::text[]) AS k)", [[`settlement:migrate:${schema}`, `settlement-pending:migrate:${schema}`]])).rowCount ?? 0) === 0) return true;
         await new Promise((res) => setTimeout(res, 100));
       }
       return false;
