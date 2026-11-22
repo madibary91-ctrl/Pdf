@@ -11,6 +11,17 @@
  *  ۷. **بازتلاشِ کران‌دار فقط برای بن‌بست/ناسازگاریِ سریال‌سازی** (`40P01`، `40001`): تراکنشِ apply کاملاً برگشته و تکرارش امن است. `55P03` (قفل در ۱۵ثانیه به دست نیامد)
  *     عمداً **هرگز** تکرار نمی‌شود: هر تلاش نویسنده‌های پول را دوباره در صف می‌گذارد؛ تصمیمِ تکرار با اپراتور (پنجرهٔ کم‌ترافیک) است. `23505` هم نیست
  *     (مسابقهٔ ساختِ دفتر پشتِ قفلِ مشورتی ناممکن است؛ ریشه‌اش در settlement-migrate است و همان‌جا می‌ماند).
+ *
+ * `down` (ADR-0049؛ تابعِ جدای `executeDown`، مسیرِ `up` دست‌نخورده): همان ناورداهای ۱، ۴ تا ۷ و:
+ *  ۸. **نصب‌نشده = بی‌کار و بی‌قفل:** `check` می‌گوید چیزی اعمال نشده ⇒ `down()` اصلاً صدا زده نمی‌شود (`OK`، فاز `check`).
+ *  ۹. **راستی‌آزماییِ پس از برگشت:** وضعیتِ دفتر دوباره خوانده می‌شود؛ هنوز اعمال‌شده ⇒ `MIGRATION_FAILED` (هرگز «ok» بر پایهٔ ادعای `down()`).
+ *     برگشتِ هم‌زمانِ دیگری (`reverted: []` ولی دفتر خالی) موفق است؛ نصبِ دوبارهٔ هم‌زمان (دفتر دوباره پر) شکست است.
+ *  ۱۰. **مسابقهٔ برگشتِ هم‌زمان:** `NOT_MIGRATED` از `down()` دو معنا دارد: (الف) جدول‌های settlement واقعاً نیستند، (ب) دفتر زیرِ پای ما توسطِ `down` ی هم‌زمان برداشته شد
+ *     (کشِ کاتالوگِ همان اتصال پس از انتظار برای قفلِ مشورتی کهنه است و `to_regclass` هنوز دفتر را «هست» می‌بیند؛ بعد `SELECT` با 42P01 می‌شکند). برای تشخیص،
+ *     وضعیتِ دفتر دوباره خوانده می‌شود: خالی ⇒ برگشت انجام شده (`OK`)؛ هنوز اعمال‌شده ⇒ همان `PREREQUISITE` در فازِ apply. همین در `check` هم برای `down`
+ *     (دفترِ ناپدیدشده یعنی «نصب‌نشده») بی‌کار و `OK` است. بازتلاشِ کورکورانه نمی‌شود.
+ *  ۱۱. نگاشتِ خطای apply همان `classifyApply` است: `55P03` ⇒ `LOCK_BUSY` (هرگز بازتلاش نمی‌شود)، دفترِ ناهمخوان ⇒ `SCHEMA_MISMATCH`،
+ *     نبودنِ جدول‌های settlement ⇒ `PREREQUISITE`، وابستگیِ شیءِ بیرونی (`2BP01`) و هر شکستِ دیگر ⇒ `MIGRATION_FAILED` با SQLSTATE.
  */
 import { classifyApply, classifyRead, classifyVerify, type Classified } from "./exit-codes";
 import type { MigrationState, PendingCommandName, PendingMigratable, PendingMigrateCode, PendingPhase } from "./types";
@@ -102,16 +113,67 @@ async function checkIndex(index: PendingMigratable, progress: Progress, how: (er
   return Object.freeze({ code: v.report.consistent ? ("OK" as const) : ("INCONSISTENT" as const), phase: "verify" as const });
 }
 
+const stateAfterDown = (applied: readonly string[], pending: readonly string[], revertedNow: readonly string[]): MigrationState =>
+  Object.freeze({ applied, pending, appliedNow: Object.freeze([]), revertedNow: Object.freeze([...revertedNow]) });
+
+/** `down`: از `check`ِ موفق (`first`) آغاز می‌شود. فقط در `execute` صدا زده می‌شود. */
+async function executeDown(index: PendingMigratable, progress: Progress, first: Extract<Read, { ok: true }>): Promise<Verdict> {
+  if (first.applied.length === 0) return Object.freeze({ code: "OK" as const, phase: "check" as const });
+  if (typeof index.down !== "function") return fail(progress, INTERNAL);
+
+  progress.phase = "apply";
+  let rec: Rec;
+  for (let attempt = 1; ; attempt++) {
+    if (progress.cancelled) return fail(progress, { code: "TIMEOUT" });
+    let r: unknown;
+    try {
+      r = await index.down();
+    } catch {
+      return fail(progress, INTERNAL);
+    }
+    rec = asRec(r) ?? {};
+    if (rec.ok === false && attempt < APPLY_ATTEMPTS && retryable(rec.error)) {
+      progress.retries++;
+      if (progress.cancelled) return fail(progress, { code: "TIMEOUT" });
+      continue;
+    }
+    break;
+  }
+  // `NOT_MIGRATED` ممکن است برگشتِ هم‌زمانِ دیگری باشد (ناوردا ۱۰): بدونِ ادعای برگشت، راستی‌آزماییِ دفتر تصمیم می‌گیرد.
+  const raced = rec.ok === false && asStoreError(rec.error).code === "NOT_MIGRATED";
+  if (rec.ok === false && !raced) return fail(progress, classifyError(rec.error, classifyApply));
+  const value = typeof rec.value === "object" && rec.value !== null ? (rec.value as { reverted?: unknown }).reverted : undefined;
+  const reverted: unknown = raced ? [] : value;
+  if ((!raced && rec.ok !== true) || !isNames(reverted)) return fail(progress, INTERNAL);
+  progress.migrations = stateAfterDown(first.applied.filter((n) => !reverted.includes(n)), [...first.pending, ...reverted.filter((n) => first.applied.includes(n))], reverted);
+
+  // ── verify: دفترِ واقعی باید خالی باشد ──
+  progress.phase = "verify";
+  if (progress.cancelled) return fail(progress, { code: "TIMEOUT" });
+  const again = await readStatus(index);
+  if (again === "malformed") return fail(progress, INTERNAL);
+  if (!again.ok) return fail(progress, classifyError(again.error, classifyVerify));
+  progress.migrations = stateAfterDown(again.applied, again.pending, reverted);
+  if (again.applied.length > 0 && raced) {
+    progress.phase = "apply";
+    return fail(progress, classifyError(rec.error, classifyApply));
+  }
+  if (again.applied.length > 0) return fail(progress, { code: "MIGRATION_FAILED" });
+  return Object.freeze({ code: "OK" as const, phase: "verify" as const });
+}
+
 export async function execute(command: PendingCommandName, index: PendingMigratable, progress: Progress): Promise<Verdict> {
   // ── check: فقط‌خواندنی، پیش از هر نوشتن ──
   progress.phase = "check";
   if (progress.cancelled) return fail(progress, { code: "TIMEOUT" });
   const first = await readStatus(index);
   if (first === "malformed") return fail(progress, INTERNAL);
+  if (!first.ok && command === "down" && asStoreError(first.error).code === "NOT_MIGRATED") return Object.freeze({ code: "OK" as const, phase: "check" as const });
   if (!first.ok) return fail(progress, classifyError(first.error, classifyRead));
   progress.migrations = state(first.applied, first.pending, []);
   const pending = first.pending.length > 0;
 
+  if (command === "down") return executeDown(index, progress, first);
   if (command === "status") return Object.freeze({ code: pending ? ("PENDING" as const) : ("OK" as const), phase: "check" as const });
   if (command === "verify") {
     if (pending) return Object.freeze({ code: "PENDING" as const, phase: "check" as const });

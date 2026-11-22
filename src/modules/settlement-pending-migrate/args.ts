@@ -1,7 +1,8 @@
 /**
  * settlement-pending-migrate — سیاستِ آرگومان و محیط (ADR-0047 تصمیم ۲). تابعِ خالص و بی‌پرتاب؛ ورودی `unknown`.
- *  - دستور: `status` | `up` | `verify` (یا تنها `--help`/`-h`). دستورِ دیگر/تکراری، فلگِ ناشناخته/تکراری، آرگومانِ اضافه ⇒ خطا.
- *  - فلگ: فقط `--timeout-ms=N` (یک توکن)، N فقط رقمِ لاتینِ مثبت در [۱۰۰۰، ۶۰۰۰۰۰]. پیش‌فرض ۶۰٬۰۰۰. همین عدد سقفِ زمانِ سمتِ پایگاهِ verify هم هست.
+ *  - دستور: `status` | `up` | `verify` | `down` (یا تنها `--help`/`-h`). دستورِ دیگر/تکراری، فلگِ ناشناخته/تکراری، آرگومانِ اضافه ⇒ خطا.
+ *  - **`down` فقط با `--yes`** (ADR-0049 تصمیم ۱): فلگِ بی‌مقدار، تک‌بار، و فقط برای `down`. نبودنش (یا بودنش با دستورِ دیگر) خطای آرگومان است ⇒ `USAGE` بی‌اتصال؛ تایپِ تصادفیِ دستورِ مخرب هرگز DDL نمی‌زند.
+ *  - فلگ: `--timeout-ms=N` (یک توکن)، N فقط رقمِ لاتینِ مثبت در [۱۰۰۰، ۶۰۰۰۰۰]. پیش‌فرض ۶۰٬۰۰۰. همین عدد سقفِ زمانِ سمتِ پایگاهِ verify هم هست.
  *  - **شِما فقط از محیط:** `SETTLEMENT_OUTBOX_SCHEMA` (نمایه همیشه در شِمای outbox است؛ نبودن/خالی = پیش‌فرض)، نه از فلگ: تا مهاجرت‌دهنده و برنامه هرگز دو شِمای متفاوت را نبینند.
  *  - `DATABASE_URL` الزامی است؛ مقدارش هرگز خوانده/برگردانده نمی‌شود (فقط حضورش؛ اتصال را گلو می‌سازد).
  *  - غلط‌یابِ نام: هر کلیدِ ناشناختهٔ `SETTLEMENT_*` همیشه خطاست (CLI روی «شِمای پیش‌فرض» می‌نویسد؛ تایپِ `SETTLEMENT_OUTBOX_SCHEMAA` نباید بی‌صدا شِمای اشتباه را مهاجرت دهد).
@@ -35,8 +36,9 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 600_000;
 const FLAG_TIMEOUT = "--timeout-ms";
+const FLAG_YES = "--yes";
 const DIGITS = /^[1-9][0-9]{0,9}$/;
-const COMMANDS: readonly string[] = ["status", "up", "verify"];
+const COMMANDS: readonly string[] = ["status", "up", "verify", "down"];
 
 /** نامِ کلیدِ env (نه مقدارش) با نویسه‌های قابل‌چاپ و کوتاه‌شده در پیام می‌آید. */
 const safeName = (k: string): string => JSON.stringify(k.replace(/[^\x20-\x7e]/g, "?").slice(0, 48));
@@ -54,13 +56,18 @@ export function parsePendingMigrateArgs(argv: unknown, env: unknown): ArgsResult
     let timeoutMs: number | null = null;
     let seenCommand = false;
     let seenTimeout = false;
+    let seenYes = false;
     for (const a of args) {
       if (a === "--help" || a === "-h") {
         issues.push("--help باید تنها بیاید.");
       } else if (a.startsWith("--")) {
         const eq = a.indexOf("=");
         const name = eq === -1 ? a : a.slice(0, eq);
-        if (name !== FLAG_TIMEOUT) {
+        if (name === FLAG_YES) {
+          if (eq !== -1) issues.push(`${FLAG_YES} مقدار نمی‌گیرد.`);
+          else if (seenYes) issues.push(`${FLAG_YES} تکراری است.`);
+          seenYes = true;
+        } else if (name !== FLAG_TIMEOUT) {
           issues.push(`فلگِ ناشناختهٔ ${safeFlag(name)}.`);
         } else if (seenTimeout) {
           issues.push(`${FLAG_TIMEOUT} تکراری است.`);
@@ -82,6 +89,9 @@ export function parsePendingMigrateArgs(argv: unknown, env: unknown): ArgsResult
       }
     }
     if (!seenCommand) issues.push("دستور لازم است (status، up یا verify).");
+    // تأییدِ صریحِ دستورِ مخرب؛ پیام‌ها فقط نامِ ثابتِ دستور/فلگ دارند (آرگومانِ موضعی هرگز پژواک نمی‌شود).
+    if (command === "down" && !seenYes) issues.push(`دستورِ down مخرب است و تأییدِ صریح می‌خواهد (${FLAG_YES}).`);
+    if (command !== null && command !== "down" && seenYes) issues.push(`${FLAG_YES} فقط برای دستورِ down معنا دارد.`);
 
     if (typeof env !== "object" || env === null || Array.isArray(env)) {
       issues.push("env باید یک شیء ساده باشد.");
@@ -112,6 +122,7 @@ export const USAGE: readonly string[] = Object.freeze([
   "settlement-pending-migrate status [--timeout-ms=N]   وضعیتِ فقط‌خواندنیِ نمایه؛ خروج ۳ اگر نصب نشده/معلق باشد",
   "settlement-pending-migrate up [--timeout-ms=N]       نصبِ اختیاری و idempotent (TRIGGER + backfill زیرِ قفل) و راستی‌آزماییِ پس از آن",
   "settlement-pending-migrate verify [--timeout-ms=N]   راستی‌آزماییِ سنگینِ نمایه در برابر حقیقت؛ خروج ۹ اگر ناهمخوان باشد",
+  "settlement-pending-migrate down --yes [--timeout-ms=N]   برگشتِ رسمیِ نصب (فقط نمایهٔ مشتق؛ به outbox/تأیید دست نمی‌زند)؛ بی‌--yes خطای آرگومان ⇒ ۲؛ نصب‌نشده = بی‌کار ⇒ ۰؛ پس از آن status ⇒ ۳",
   "محیط: DATABASE_URL (الزامی)، SETTLEMENT_OUTBOX_SCHEMA (اختیاری؛ همان برنامه). پیش‌نیاز: settlement:migrate up",
   "خروج: ۰ ok · ۱ internal · ۲ usage · ۳ pending · ۴ unavailable · ۵ schema-mismatch · ۶ migration-failed · ۷ timeout · ۸ prerequisite · ۹ inconsistent · ۱۰ lock-busy",
 ]);

@@ -53,6 +53,7 @@ export function manualTimer(): ManualTimer {
 export const MIGRATION = "0001_dead_pending";
 export const okStatus = (applied: readonly string[], pending: readonly string[]) => ({ ok: true as const, value: { applied, pending } });
 export const okMigrate = (applied: readonly string[]) => ({ ok: true as const, value: { applied, alreadyApplied: [] as string[] } });
+export const okDown = (reverted: readonly string[]) => ({ ok: true as const, value: { reverted } });
 export const okVerify = (o: Partial<PendingVerifyReport> = {}) => {
   const base = { expected: 3, indexed: 3, missing: 0, stale: 0, ...o };
   return { ok: true as const, value: { consistent: base.missing === 0 && base.stale === 0, ...base } };
@@ -61,12 +62,12 @@ export const okVerify = (o: Partial<PendingVerifyReport> = {}) => {
 export const storeErr = (code: string, pgCode?: string) => ({ ok: false as const, error: { code, message: CANARY, ...(pgCode === undefined ? {} : { pgCode }) } });
 
 type Step = unknown | (() => unknown);
-export type Script = Readonly<{ status?: readonly Step[]; migrate?: readonly Step[]; verify?: readonly Step[]; touchDb?: boolean }>;
+export type Script = Readonly<{ status?: readonly Step[]; migrate?: readonly Step[]; verify?: readonly Step[]; down?: readonly Step[]; touchDb?: boolean }>;
 
 /** نمایهٔ ساختگی: گام‌ها به ترتیب مصرف می‌شوند و آخری تکرار می‌شود؛ تابع‌بودنِ گام = اجرا (می‌تواند بپرتابد یا آویزان بماند). */
 export function fakeIndex(calls: string[], script: Script, db: LedgerDatabase): PendingMigratable {
-  const counters = { status: 0, migrate: 0, verify: 0 };
-  const next = async (kind: "status" | "migrate" | "verify", steps: readonly Step[] | undefined, fallback: unknown): Promise<unknown> => {
+  const counters = { status: 0, migrate: 0, verify: 0, down: 0 };
+  const next = async (kind: "status" | "migrate" | "verify" | "down", steps: readonly Step[] | undefined, fallback: unknown): Promise<unknown> => {
     calls.push(kind);
     if (script.touchDb !== false) await db.execute({} as never);
     const list = steps ?? [fallback];
@@ -77,6 +78,7 @@ export function fakeIndex(calls: string[], script: Script, db: LedgerDatabase): 
     status: () => next("status", script.status, okStatus([MIGRATION], [])) as never,
     migrate: () => next("migrate", script.migrate, okMigrate([])) as never,
     verify: () => next("verify", script.verify, okVerify()) as never,
+    down: () => next("down", script.down, okDown([MIGRATION])) as never,
   };
 }
 

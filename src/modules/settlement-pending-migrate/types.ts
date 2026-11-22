@@ -4,7 +4,7 @@
  */
 import type { LedgerDatabase, PgMigrationReport, PgMigrationStatus, PgStoreResult } from "@/modules/ledger";
 import type { LoopTimer } from "@/modules/settlement";
-import type { PendingVerifyReport } from "@/modules/settlement-pending";
+import type { PendingDownReport, PendingVerifyReport } from "@/modules/settlement-pending";
 
 /**
  * جدولِ کدهای خروجِ بسته (قراردادِ استقرار؛ هر مقدار با آزمون قفل است). ۰ تا ۷ هم‌معنا با `settlement-migrate` (ADR-0034) و سه کدِ تازه:
@@ -37,7 +37,8 @@ export const PENDING_MIGRATE_EXIT = Object.freeze({
 export type PendingMigrateCode = keyof typeof PENDING_MIGRATE_EXIT;
 export type PendingMigrateExitCode = (typeof PENDING_MIGRATE_EXIT)[PendingMigrateCode];
 
-export type PendingCommandName = "status" | "up" | "verify";
+/** `down` (ADR-0049) مخرب است و فقط با `--yes` اجرا می‌شود؛ هیچ داده‌ای از حقیقتِ مالی (outbox/تأیید) را نمی‌برد، فقط نمایهٔ مشتق را برمی‌دارد. */
+export type PendingCommandName = "status" | "up" | "verify" | "down";
 /** `check`: خواندنِ فقط‌خواندنیِ وضعیت · `apply`: اعمال · `verify`: خواندنِ دوبارهٔ وضعیت و راستی‌آزماییِ نمایه در برابر حقیقت. */
 export type PendingPhase = "check" | "apply" | "verify";
 
@@ -54,8 +55,11 @@ export type ArgsResult =
   | Readonly<{ ok: true; value: ParsedArgs }>
   | Readonly<{ ok: false; command: PendingCommandName | null; issues: readonly string[] }>;
 
-/** وضعیتِ دفترِ مهاجرتِ نمایه: `appliedNow` فقط مهاجرت‌هایی که همین اجرا اعمال کرد (در status/verify همیشه خالی). */
-export type MigrationState = Readonly<{ applied: readonly string[]; pending: readonly string[]; appliedNow: readonly string[] }>;
+/**
+ * وضعیتِ دفترِ مهاجرتِ نمایه: `appliedNow` فقط مهاجرت‌هایی که همین اجرا اعمال کرد (در status/verify/down همیشه خالی).
+ * `revertedNow` فقط در `down` می‌آید: مهاجرت‌هایی که همین اجرا برگرداند (به ترتیبِ برگشت؛ نصب‌نشده/برگشتِ هم‌زمانِ دیگری = خالی).
+ */
+export type MigrationState = Readonly<{ applied: readonly string[]; pending: readonly string[]; appliedNow: readonly string[]; revertedNow?: readonly string[] }>;
 
 export type PendingMigrateReport = Readonly<{
   tool: "settlement-pending-migrate";
@@ -85,6 +89,11 @@ export type PendingMigratable = Readonly<{
   status(): Promise<PgStoreResult<PgMigrationStatus>>;
   migrate(): Promise<PgStoreResult<PgMigrationReport>>;
   verify(): Promise<PgStoreResult<PendingVerifyReport>>;
+  /**
+   * برگشتِ رسمی (ADR-0048). **اختیاری در نوع** تا فروشگاه‌های ساختگیِ آزمون‌های ۰۰۴۷ (که فقط status/migrate/verify دارند) بی‌تغییر تایپ شوند؛
+   * ولی فرمانِ `down` نبودنش را `INTERNAL` (بسته) می‌شمارد و هرگز حدس نمی‌زند. نمایهٔ واقعی همیشه دارد.
+   */
+  down?(): Promise<PgStoreResult<PendingDownReport>>;
 }>;
 
 export type IndexResult = Readonly<{ ok: true; index: PendingMigratable }> | Readonly<{ ok: false; issues: readonly string[] }>;

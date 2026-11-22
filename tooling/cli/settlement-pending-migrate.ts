@@ -6,6 +6,7 @@
  *   DATABASE_URL=… npm run settlement:pending -- status
  *   DATABASE_URL=… npm run settlement:pending -- up --timeout-ms=120000
  *   DATABASE_URL=… npm run settlement:pending -- verify
+ *   DATABASE_URL=… npm run settlement:pending -- down --yes     (برگشتِ رسمی؛ ADR-0049؛ بی‌--yes خطای آرگومان)
  * یا مستقیم:  node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tooling/cli/register.mjs tooling/cli/settlement-pending-migrate.ts status
  *
  * stdout: دقیقاً یک خطِ JSON (گزارشِ بسته)؛ stderr خالی است. `DATABASE_URL` فقط از محیطِ فرایند خوانده می‌شود (فایل `.env` را این ابزار نمی‌خواند؛
