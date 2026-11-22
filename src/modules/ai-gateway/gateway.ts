@@ -40,7 +40,7 @@ export function readClock(clock: Clock): number {
   return t;
 }
 
-async function emit(cfg: ResolvedConfig, event: UsageEvent): Promise<GatewayWarning[]> {
+export async function emit(cfg: ResolvedConfig, event: UsageEvent): Promise<GatewayWarning[]> {
   const sink = cfg.usageSink;
   if (sink === null) return [];
   const settled = await raceDeadline(

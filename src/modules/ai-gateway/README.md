@@ -145,3 +145,32 @@ const r = encodeToolResults("openai-chat", d.value.toolCalls, [{ id, content, is
 | پیش‌فرض‌ها | `allowParallel=false`، `strict` خاموش، نامِ ابزار `^[A-Za-z0-9_-]{1,64}$` |
 
 محدودیت‌های صادقانه: پاسخ‌های آزمون شبیه‌سازی‌اند (تماسِ زنده نشد)؛ thinking/server tools پشتیبانی نمی‌شوند؛ کش‌شدنِ Anthropic هزینه را ناشناخته می‌کند تا قیمتِ کش در `PriceSpec` بیاید؛ `tool_choice` اجباری روی بعضی مدل‌ها پشتیبانی نمی‌شود.
+
+## CT‑3b — «گامِ ابزار» (ADR-0055)
+
+دروازهٔ جدا و **افزایشی** برای یک گامِ مدل با ابزار؛ `createGateway`/`ModelProvider`/`Completion` و کدهای خطا دست‌نخورده‌اند. فایل‌ها: `src/modules/ai-gateway/tool-step.ts` (دروازه)، `src/modules/ai-gateway/tool-step-request.ts` (سنجشِ مرزی)، `src/modules/ai-gateway/tool-step-config.ts`، `src/modules/ai-gateway/tool-step-spend.ts` (جمعِ هزینه).
+
+```ts
+import { createToolGateway, encodeToolResults, sumStepSpend } from "@/modules/ai-gateway";
+
+// config همان پیکربندیِ createGateway؛ setup مدل‌های ابزاری را با قالبِ سیم و ارائه‌دهنده می‌شناساند
+const g = createToolGateway(config, { models: { "legal-chat": { format: "openai-chat", provider: { completeWithTools: (call) => httpPost(call) /* بدنهٔ خامِ JSON */ } } } });
+const s1 = await g.value.completeStep({ model: "legal-chat", messages, maxOutputTokens: 800, tools: SPECS });
+if (s1.ok && s1.value.finish === "tool_calls") {
+  const results = encodeToolResults(g.value.toolFormat("legal-chat"), s1.value.toolCalls, [{ id, content, isError }]);
+  const s2 = await g.value.completeStep({ model: "legal-chat", messages, maxOutputTokens: 800, tools: SPECS, continuation: [s1.value.assistantMessage, ...results.value] });
+}
+sumStepSpend([s1.value, s2.value]); // مصرف/هزینهٔ چندگامی؛ نامعلوم حدس زده نمی‌شود
+```
+
+| قاعده | رفتار |
+|---|---|
+| درخواست | همان سخت‌گیریِ `parseRequest` + `tools`/`toolChoice`/`allowParallel`/`continuation`؛ مدلِ بی‌ابزار ⇒ `INVALID_REQUEST` |
+| `continuation` | فقط نقشِ مجازِ قالب (هرگز `system`)، شروع با `assistant`، پایان نه با `assistant`، JSONِ بی‌ابهام، ≤۱۲۸ پیام/۴۰۰٬۰۰۰ نویسه؛ کپیِ یخ‌زده |
+| پاسخ | ارائه‌دهنده بدنهٔ **خام** می‌دهد؛ دروازه با `decodeToolReply` تفسیر می‌کند |
+| پاسخِ بریده | `PROVIDER_BAD_RESPONSE` با `issues[0] === TRUNCATED_TOOL_CALL_ISSUE`؛ هرگز اجرا نمی‌شود؛ `error.usage/cost` هزینهٔ همان گام |
+| رویداد | برای هر فراخوانیِ رسیده به ارائه‌دهنده یک `UsageEvent` (`tool_calls` در آن `stop`)؛ برای درخواستِ نامعتبر هیچ |
+| هزینهٔ چندگامی | `sumStepSpend`: به‌تفکیکِ (ارز، نسخهٔ قیمت)، نامعلوم جدا، سرریز ⇒ `null` |
+
+محدودیت‌های صادقانه: فقط **یک گام** (حلقه/سقف/رزروِ هزینه در CT‑4)؛ تلاشِ دوباره و جایگزینِ میان‌ارائه‌دهنده برای گامِ ابزار نیست (`continuation` به قالبِ یک ارائه‌دهنده بسته است)؛ هنوز ارائه‌دهندهٔ HTTP نیست (CT‑3c)؛ پاسخ‌های آزمون شبیه‌سازی‌اند؛ رویدادِ مصرفِ گامِ ابزار از رویدادِ عادی قابل‌تمایز نیست.
+

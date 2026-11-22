@@ -1,4 +1,4 @@
-/** رابط عمومی ai-gateway (برش ۱: هسته؛ برش ۲: تلاش دوباره و جایگزین؛ CT‑3a: رمزگذارِ ابزار روی سیم)؛ هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود. */
+/** رابط عمومی ai-gateway (برش ۱: هسته؛ برش ۲: تلاش دوباره و جایگزین؛ CT‑3a: رمزگذارِ ابزار روی سیم؛ CT‑3b: دروازهٔ گامِ ابزار)؛ هر چیز دیگر داخلی است و از بیرون ماژول نباید import شود. */
 export { createGateway } from "./gateway";
 export { createResilientGateway } from "./resilience";
 export { resolvePolicy, POLICY_LIMITS, RETRYABLE_CODES, FALLBACK_ELIGIBLE_CODES } from "./resilience-policy";
@@ -41,6 +41,23 @@ export type {
   ToolWireUsage,
   WireMessage,
 } from "./tool-wire-types";
+export { createToolGateway, TRUNCATED_TOOL_CALL_ISSUE } from "./tool-step";
+export { sumStepSpend } from "./tool-step-spend";
+export { TOOL_STEP_LIMITS } from "./tool-step-request";
+export type {
+  StepSpend,
+  StepSpendInput,
+  ToolGateway,
+  ToolGatewayResult,
+  ToolModelProvider,
+  ToolModelSpec,
+  ToolProviderCall,
+  ToolSetup,
+  ToolStepCompletion,
+  ToolStepError,
+  ToolStepRequest,
+  ToolStepResult,
+} from "./tool-step-types";
 export { ProviderFailure, ERROR_CODES, MAX_RETRY_AFTER_MS } from "./errors";
 export type { ProviderFailureKind } from "./errors";
 export type {
