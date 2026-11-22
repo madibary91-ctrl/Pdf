@@ -66,6 +66,7 @@ export const MODULES: readonly ModuleInfo[] = [
   m("ledger", 3, 8, "دفتر اعتبار", "خرید، رزرو، مصرف و بازگشت اعتبار پیام", ["shared-types"], false, true),
   m("identity", 3, 8, "هویت", "ثبت‌نام، ورود با پیامک، نشست‌ها، نقش‌ها و جداسازی مستأجر", ["shared-types"], false, true),
   m("ai-gateway", 3, 6, "واسط مدل", "واسط یکسان مدل زبانی، ثبت مصرف و هزینه", ["shared-types"], false, false),
+  m("ai-provider-http", 4, 6, "ارائه‌دهندهٔ HTTP برای مدل با ابزار", "انتقالِ HTTP برای گامِ ابزارِ ai-gateway (OpenAI و Anthropic): ساختِ بدنه/سرایند به قالبِ سیم، fetch تزریقی با redirect:error و بی‌نشتِ کلید، نگاشتِ وضعیت و Retry-After به ProviderFailure و خواندنِ بدنه با سقفِ بایت؛ تفسیرِ پاسخ در ai-gateway می‌ماند", ["ai-gateway"], false, true),
   m("retrieval", 3, 6, "بازیابی", "بازیابی ترکیبی از پایگاه دانش با فیلتر تاریخ اعتبار", ["legal-kb-store", "persian-text"], false, false, "done"),
   m("citation-verifier", 3, 6, "راستی‌آزمایی استناد", "تطبیق هر ارجاع با رکورد واقعی؛ حذف/علامت‌گذاری ارجاع نامعتبر", ["legal-kb-schema", "shared-types"], true, true, "done"),
   m("calc-tools", 3, 6, "ابزار محاسبه برای مدل", "ابزارهایی که مدل برای محاسبه صدا می‌زند", ["legal-calc", "shared-types"], true, false),
