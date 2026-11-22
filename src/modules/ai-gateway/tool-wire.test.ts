@@ -358,7 +358,7 @@ describe("decodeToolReply · OpenAI", () => {
     const raw = oaiReply({ tool_calls: [oaiCall("a", "t", "{}")] }, "tool_calls");
     const v = must(decodeToolReply("openai-chat", raw));
     expect(deepFrozen(v)).toBe(true);
-    (raw.choices[0] as { message: { tool_calls: { id: string }[] } }).message.tool_calls[0]!.id = "mutated";
+    (raw.choices[0] as unknown as { message: { tool_calls: { id: string }[] } }).message.tool_calls[0]!.id = "mutated";
     expect(v.toolCalls[0]?.id).toBe("a");
   });
 });
