@@ -124,3 +124,24 @@ else      { r.error.code; r.error.report; }       // GatewayError + report
 6. ساعتِ خراب (پرتاب/NaN) در میانه `INTERNAL_ERROR` می‌دهد؛ تلاش‌های انجام‌شده در `report` می‌مانند و رویدادِ همان تلاشِ آسیب‌دیده ممکن است ثبت نشده باشد. ساعتِ تزریقی باید ساده و بی‌خطا باشد. ساعتِ ناهمواره (پس‌رفتن) زمانِ باقی‌مانده را بزرگ‌تر می‌بیند؛ `maxTotalAttempts` همچنان نگهبان است.
 7. انتظارِ backoff با تایمر تزریقی و مهلتِ کل با ساعتِ تزریقی سنجیده می‌شود؛ در محیط واقعی هر دو زمانِ دیواری‌اند.
 8. جایگزین روی **همان ارائه‌دهنده** (مثلاً مدلِ ارزان‌تر) محدودیت نرخ را دور نمی‌زند.
+
+## CT‑3a — رمزگذارِ «ابزار روی سیم» (ADR-0054)
+
+سه تابعِ خالص و بی‌پرتاب که توصیفِ ابزار، پاسخِ مدل و نتیجهٔ ابزار را میانِ قالبِ سیمِ OpenAI (`"openai-chat"`) و Anthropic (`"anthropic-messages"`) و شکلِ داخلی تبدیل می‌کنند. **چیزی را اجرا نمی‌کنند و به شبکه نمی‌روند**؛ پورتِ `ModelProvider` و `gateway.ts` دست‌نخورده‌اند (CT‑3b). فایل‌ها: `src/modules/ai-gateway/tool-wire.ts` (رمزگذاری)، `src/modules/ai-gateway/tool-wire-decode.ts` (رمزگشایی)، `tool-wire-json.ts`، `tool-wire-types.ts`.
+
+```ts
+import { encodeTools, decodeToolReply, encodeToolResults } from "@/modules/ai-gateway";
+const t = encodeTools("openai-chat", specs, { choice: "auto" });   // بخشِ tools/tool_choice برای ادغام در بدنهٔ درخواست
+const d = decodeToolReply("openai-chat", parsedJsonBody);          // { text, toolCalls[{id,name,argumentsJson}], finish, usage|null, assistantMessage }
+const r = encodeToolResults("openai-chat", d.value.toolCalls, [{ id, content, isError }]); // پیام(های) نتیجه برای گامِ بعد
+```
+
+| قاعده | رفتار |
+|---|---|
+| فراخوانیِ بریده | `length`/`max_tokens`/`content_filter` همراهِ ابزار ⇒ `TRUNCATED_TOOL_CALL`؛ هرگز اجرا نمی‌شود |
+| مصرف | از پاسخِ خراب هم نجات داده می‌شود؛ نامعتبر ⇒ `null` (نه ۰)؛ Anthropic با کشِ ناصفر ⇒ `null` |
+| آرگومان | رشتهٔ خامِ نااعتبارسنجی‌شده (≤۶۵٬۵۳۶)؛ مرزِ اجرا (`calc-tools`) خطای قابل‌اصلاح می‌دهد |
+| نتیجه‌ها | هر فراخوانی دقیقاً یک نتیجه؛ OpenAI: پیامِ `tool` برای هر کدام؛ Anthropic: یک پیامِ `user` با `tool_result`ها |
+| پیش‌فرض‌ها | `allowParallel=false`، `strict` خاموش، نامِ ابزار `^[A-Za-z0-9_-]{1,64}$` |
+
+محدودیت‌های صادقانه: پاسخ‌های آزمون شبیه‌سازی‌اند (تماسِ زنده نشد)؛ thinking/server tools پشتیبانی نمی‌شوند؛ کش‌شدنِ Anthropic هزینه را ناشناخته می‌کند تا قیمتِ کش در `PriceSpec` بیاید؛ `tool_choice` اجباری روی بعضی مدل‌ها پشتیبانی نمی‌شود.
