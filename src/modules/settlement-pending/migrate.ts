@@ -9,7 +9,7 @@
  * قفلِ مشورتیِ مهاجرتِ settlement (`settlement:migrate:<شِما>`) **پیش** از قفلِ خودِ این ماژول گرفته می‌شود تا مهاجرتِ هم‌زمانِ آن دو سریال شوند؛ ترتیبِ
  * ثابت (settlement ← pending) بن‌بست را ناممکن می‌کند. آزمونِ PostgreSQL برابریِ این کلید با کلیدِ settlement را قفل می‌کند.
  */
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { LedgerDatabase, LedgerExecutor, PgMigrationReport, PgMigrationStatus, PgStoreResult } from "@/modules/ledger";
 import { PendingStoreError, toStoreError } from "./errors";
 import { MIGRATIONS, migrationChecksum, renderStatement, rollbackStatements, type Migration } from "./migrations";
@@ -19,6 +19,20 @@ import type { PendingDownReport } from "./types";
 export type LedgerRow = Readonly<{ name: string; checksum: string }>;
 
 const LEDGER = "settlement_pending_migration_ledger";
+
+/**
+ * «آیا رابطه (جدول/…) با این نامِ کامل **همین الان** وجود دارد؟» — ADR-0050.
+ * `to_regclass` به‌تنهایی از **کشِ کاتالوگِ** اتصال جواب می‌دهد (جست‌وجوی بی‌قفل؛ `AcceptInvalidationMessages` را صدا نمی‌زند) و **انتظار برای قفلِ مشورتی**
+ * کش را تازه نمی‌کند. پس روی اتصالِ گرم، پس از انتظارِ پشتِ `migrate()`/`down()` یی که میانِ همین مدت commit شد، هر دو جهت کهنه می‌شود:
+ *  - «هست» برای جدولِ حذف‌شده ⇒ `SELECT` بعدی 42P01 می‌دهد (کدِ ۸ِ گمراه‌کننده)؛
+ *  - «نیست» برای جدولِ تازه‌ساخته ⇒ `down()` بی‌صدا «بی‌کار» برمی‌گشت در حالی که نصب سر جایش بود (خطرناک‌تر).
+ * اینجا `oid` ی که `to_regclass` می‌دهد با یک **اسکنِ pg_class زیرِ snapshotِ همین دستور** سنجیده می‌شود؛ تحلیلِ این دستور قفلِ pg_class را می‌گیرد و
+ * پیش از اجرا کشِ کاتالوگ را با پیام‌های نامعتبرسازیِ commitشده‌ها تازه می‌کند. آزمونِ PostgreSQL (اتصالِ گرم، هر دو جهت) این را قفل کرده است.
+ * نامِ کامل **یک** پارامتر است و ترتیبِ پارامترها حفظ می‌شود (آزمون‌های قفل‌شدهٔ ۰۰۴۸ پارامترِ نخست را برای تشخیصِ دفتر می‌خوانند).
+ */
+function relationExists(qualifiedName: string): SQL {
+  return sql`EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.oid = to_regclass(${qualifiedName}))`;
+}
 
 async function readLedger(ex: LedgerExecutor, schema: string): Promise<readonly LedgerRow[]> {
   const res = await ex.execute(sql`SELECT name, checksum FROM ${tableRef(schema, LEDGER)} ORDER BY name`);
@@ -63,10 +77,10 @@ export function reconcile(ledger: readonly LedgerRow[], migrations: readonly Mig
   return { applied, pending };
 }
 
-/** پیش‌نیاز: جدول‌های outbox و تأیید موجودند (مهاجرتِ settlement اعمال شده). `to_regclass` خطا نمی‌دهد؛ نبودن ⇒ `NOT_MIGRATED`. */
+/** پیش‌نیاز: جدول‌های outbox و تأیید موجودند (مهاجرتِ settlement اعمال شده). وجود با `relationExists` (بی‌خطا و بدونِ کشِ کهنه)؛ نبودن ⇒ `NOT_MIGRATED`. */
 async function assertSettlementTables(ex: LedgerExecutor, schema: string): Promise<void> {
   const res = await ex.execute(
-    sql`SELECT to_regclass(${`${JSON.stringify(schema)}.settlement_outbox`}) IS NOT NULL AS outbox, to_regclass(${`${JSON.stringify(schema)}.settlement_dead_ack`}) IS NOT NULL AS ack`,
+    sql`SELECT ${relationExists(`${JSON.stringify(schema)}.settlement_outbox`)} AS outbox, ${relationExists(`${JSON.stringify(schema)}.settlement_dead_ack`)} AS ack`,
   );
   const row = res.rows[0];
   if (row?.["outbox"] !== true || row["ack"] !== true) {
@@ -116,7 +130,7 @@ export async function down(db: LedgerDatabase, schema: string): Promise<PgStoreR
     const report = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`settlement:migrate:${schema}`}, 0))`);
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`settlement-pending:migrate:${schema}`}, 0))`);
-      const present = await tx.execute(sql`SELECT to_regclass(${`${JSON.stringify(schema)}.${LEDGER}`}) IS NOT NULL AS present`);
+      const present = await tx.execute(sql`SELECT ${relationExists(`${JSON.stringify(schema)}.${LEDGER}`)} AS present`);
       if (present.rows[0]?.["present"] !== true) return { reverted: [] } satisfies PendingDownReport;
 
       const status = reconcile(await readLedger(tx, schema));
@@ -149,7 +163,7 @@ export async function migrationStatus(db: LedgerDatabase, schema: string): Promi
   try {
     const status = await db.transaction(
       async (tx) => {
-        const exists = await tx.execute(sql`SELECT to_regclass(${`${JSON.stringify(schema)}.${LEDGER}`}) IS NOT NULL AS present`);
+        const exists = await tx.execute(sql`SELECT ${relationExists(`${JSON.stringify(schema)}.${LEDGER}`)} AS present`);
         if (exists.rows[0]?.["present"] !== true) return { applied: [], pending: MIGRATIONS.map((m) => m.name) } satisfies PgMigrationStatus;
         return reconcile(await readLedger(tx, schema));
       },
