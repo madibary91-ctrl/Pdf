@@ -148,6 +148,8 @@ dbDescribe("settlement-pending · اتصالِ گرم و کشِ کاتالوگِ
     const seen = await k.session(async (q, commit) => {
       await takeLock(q, k);
       const pending = w.db.transaction(async (tx) => {
+        // گرم‌کردنِ **درونِ همین تراکنش/اتصال** (ADR-0052): استخرِ آزمون `idleTimeoutMillis`=۵۰ms دارد و زیرِ بارِ دروازه ممکن است اتصالِ گرمِ `status()` پیش از رسیدن به این‌جا بسته شود ⇒ اتصالِ سرد ⇒ `raw=false` (ناپایداریِ ثبت‌شده در ۰۰۵۱)
+        await tx.execute(sql`SELECT to_regclass(${target}) IS NOT NULL AS p`);
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey(k.schema)}, 0))`);
         const raw = await tx.execute(sql`SELECT to_regclass(${target}) IS NOT NULL AS p`);
         const fixed = await tx.execute(sql`SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.oid = to_regclass(${target})) AS p`);
