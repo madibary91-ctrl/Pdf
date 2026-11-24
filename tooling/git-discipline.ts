@@ -181,6 +181,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "settlement-pending-migrate",
   "ai-orchestrator",
   "ai-provider-http",
+  "tool-loop",
   "doc-templates-core",
   "legal-kb-ingest",
   "eval-set",
