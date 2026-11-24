@@ -184,6 +184,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "tool-loop",
   "tool-runner",
   "calc-tool-executor",
+  "calc-answer-cards",
   "doc-templates-core",
   "legal-kb-ingest",
   "eval-set",
