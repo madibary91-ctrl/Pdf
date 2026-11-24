@@ -182,6 +182,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "ai-orchestrator",
   "ai-provider-http",
   "tool-loop",
+  "tool-runner",
   "doc-templates-core",
   "legal-kb-ingest",
   "eval-set",
