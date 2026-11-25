@@ -5,3 +5,7 @@ node_modules/
 test-results/
 next-env.d.ts
 *.tsbuildinfo
+
+# خروجی‌های تحویل (پچ/bundle) در مخزن کامیت نمی‌شوند؛ در محل پایدار بیرونی بارگذاری می‌شوند (G13، ADR-0068)
+/*.bundle
+/*.patch
