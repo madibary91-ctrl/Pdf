@@ -74,6 +74,7 @@ describe("tooling · بودجهٔ اتصال آزمون‌ها (اسکنر)", ()
       "src/modules/settlement-runtime/test-db.ts",
       "src/modules/settlement/pg/test-db.ts",
       "src/modules/settlement/test-db.ts",
+      "src/modules/tool-policy-store-pg/test-db.ts",
     ]);
     for (const f of files) {
       const src = readFileSync(join(__dirname, "..", f), "utf8");

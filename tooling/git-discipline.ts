@@ -190,6 +190,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "tool-call-deadline",
   "tool-policy",
   "tool-policy-admin",
+  "tool-policy-store-pg",
   "durable-tool-gateway",
   "doc-templates-core",
   "legal-kb-ingest",
