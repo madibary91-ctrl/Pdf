@@ -188,6 +188,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "calc-answer-service",
   "metered-tool-gateway",
   "tool-call-deadline",
+  "tool-policy",
   "durable-tool-gateway",
   "doc-templates-core",
   "legal-kb-ingest",
