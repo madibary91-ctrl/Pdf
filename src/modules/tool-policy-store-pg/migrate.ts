@@ -110,11 +110,16 @@ export async function assertWritable(ex: PolicyPgExecutor, schema: string): Prom
   }
 }
 
-/** فقط‌خواندنی: وضعیتِ مهاجرت، وجودِ قیدها/تریگرها، شمارِ ردیف و بی‌شکافی. شِمای ناموجود = همه معلق (خطا نیست). */
-export async function status(db: PolicyPgDatabase, schema: string): Promise<PgPolicyResult<PgPolicyStoreStatus>> {
+/**
+ * فقط‌خواندنی: وضعیتِ مهاجرت، وجودِ قیدها/تریگرها، شمارِ ردیف و بی‌شکافی. شِمای ناموجود = همه معلق (خطا نیست).
+ * `prepare` نخستین دستورِ تراکنش است (سقفِ `statement_timeout`/`lock_timeout`؛ ADR-0074) و **اجباری** است تا هیچ فراخوانی بی‌سقف نماند؛
+ * شکستِ آن شکستِ status است و هیچ دستورِ بعدی اجرا نمی‌شود.
+ */
+export async function status(db: PolicyPgDatabase, schema: string, prepare: (tx: PolicyPgExecutor) => PromiseLike<unknown>): Promise<PgPolicyResult<PgPolicyStoreStatus>> {
   try {
     const value = await db.transaction(
       async (tx): Promise<PgPolicyStoreStatus> => {
+        await prepare(tx);
         const pendingAll = MIGRATIONS.map((m) => m.name);
         const empty = (exists: boolean): PgPolicyStoreStatus => ({ schemaExists: exists, applied: [], pending: pendingAll, problems: [], rows: 0, latestVersion: null, contiguous: true, ready: false });
         if (!(await schemaExists(tx, schema))) return empty(false);

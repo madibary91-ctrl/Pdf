@@ -3,7 +3,7 @@
  * ضمانت‌ها (آزمونِ قراردادِ مشترکِ tool-policy-admin را می‌گذراند):
  *  - `append` اتمی و CAS است: «آخرین+۱» را تریگرِ پایگاه و کلیدِ اصلی تضمین می‌کنند؛ بازندهٔ مسابقه `CONFLICT` می‌گیرد، نه استثنا.
  *  - رکوردِ ورودی و هر ردیفِ خوانده‌شده با `parsePolicyRecord` سنجیده می‌شود (ذخیره‌ساز یک مرز است)؛ ردیفِ خراب بسته می‌شکند.
- *  - هر عملیات یک تراکنشِ کوتاه با سقفِ `statement_timeout`/`lock_timeout`؛ مهاجرتِ ناهمخوان یا نگهبانِ خاموش ⇒ `UNAVAILABLE`.
+ *  - هر عملیات (و `status()`) یک تراکنشِ کوتاه با سقفِ `statement_timeout`/`lock_timeout`؛ مهاجرتِ ناهمخوان یا نگهبانِ خاموش ⇒ `UNAVAILABLE`.
  *  - هرگز نمی‌پرتابد؛ خطا فقط کدِ ثابتِ پورت است (متنِ خطای pg، SQL و دادهٔ رکورد هرگز بیرون نمی‌رود).
  * همهٔ مقدارها پارامترِ پیوندی‌اند؛ تنها متنِ ثابتِ SQL فهرستِ ستون‌های `RECORD_COLUMNS` است.
  */
@@ -32,11 +32,15 @@ export function createPgPolicyVersionStore(db: PolicyPgDatabase, options: PgPoli
   }
   const table = tableRef(schema, VERSIONS_TABLE);
 
+  /** سقفِ سمتِ پایگاهِ هر تراکنش (تراکنشی؛ به اتصالِ استخر نشت نمی‌کند). منبعِ حقیقتِ یگانه برای چهار عملیات و `status()` (ADR-0074). */
+  const applyTimeouts = (tx: PolicyPgExecutor): PromiseLike<unknown> =>
+    tx.execute(sql`SELECT set_config('statement_timeout', ${String(timeout)}, true), set_config('lock_timeout', ${String(timeout)}, true)`);
+
   async function run<T>(mode: "read" | "write", fn: (tx: PolicyPgExecutor) => Promise<T>): Promise<StoreResult<T>> {
     try {
       const value = await db.transaction(
         async (tx) => {
-          await tx.execute(sql`SELECT set_config('statement_timeout', ${String(timeout)}, true), set_config('lock_timeout', ${String(timeout)}, true)`);
+          await applyTimeouts(tx);
           await assertCurrent(tx, schema);
           if (mode === "write") await assertWritable(tx, schema);
           return fn(tx);
@@ -110,7 +114,7 @@ export function createPgPolicyVersionStore(db: PolicyPgDatabase, options: PgPoli
       ...store,
       schema,
       migrate: () => migrate(db, schema),
-      status: () => status(db, schema),
+      status: () => status(db, schema, applyTimeouts),
     }),
   };
 }
