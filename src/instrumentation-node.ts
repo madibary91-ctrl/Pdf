@@ -7,16 +7,16 @@
  */
 import { startSettlementBootstrap } from "@/modules/settlement-bootstrap";
 import type { BootstrapEvent } from "@/modules/settlement-bootstrap";
+import { openSharedDatabase, sharedExit } from "./instrumentation-shared";
 
 export async function registerSettlement(): Promise<void> {
   await startSettlementBootstrap({
     env: process.env,
     store: globalThis,
     processOwner: process.env.NEXT_MANUAL_SIG_HANDLE ? "host" : "next",
-    openDatabase: async () => {
-      const { db, pool } = await import("@/db");
-      return { db, close: () => pool.end() };
-    },
+    // خروجِ هماهنگ و استخرِ اجاره‌ای (ADR-0076): با میزبانِ سیاست در یک فرایند، نه `pool.end()` دوباره و نه خروجِ زودهنگام.
+    exit: sharedExit,
+    openDatabase: openSharedDatabase,
     log: (event: BootstrapEvent) => console.log(JSON.stringify({ scope: "settlement", ...event })),
   });
 }

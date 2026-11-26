@@ -8,4 +8,11 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_PHASE === "phase-production-build") return;
   const { registerSettlement } = await import("./instrumentation-node");
   await registerSettlement();
+  // میزبانِ سیاستِ ابزار (ADR-0076): مستقل از تسویه؛ شکستِ آن هرگز بوتِ سرور یا رفتگر را نمی‌شکند.
+  try {
+    const { registerToolPolicy } = await import("./instrumentation-policy");
+    await registerToolPolicy();
+  } catch {
+    console.error(JSON.stringify({ scope: "tool-policy", type: "register.crashed" }));
+  }
 }

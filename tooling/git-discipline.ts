@@ -195,6 +195,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "tool-policy-refresher",
   "tool-policy-runtime",
   "tool-policy-host",
+  "tool-policy-bootstrap",
   "durable-tool-gateway",
   "doc-templates-core",
   "legal-kb-ingest",
@@ -220,6 +221,7 @@ const HIGH_RISK: readonly RegExp[] = [
   new RegExp(`^src/modules/(${HIGH_RISK_MODULES.join("|")})/`),
   /^src\/modules\/registry\.ts$/,
   /^src\/instrumentation[^/]*\.ts$/, // گلوی بوتِ رفتگرِ تسویه (ADR-0033)
+  /^src\/process-exit\.ts$/, // خروجِ هماهنگِ فرایند میان میزبان‌های فرایندی (ADR-0076)
   /^tooling\/cli\//, // گلوی CLIِ مهاجرتِ تسویه و حلقهٔ resolve (ADR-0034): مهاجرتِ پایگاهِ پول
   /^src\/db\//,
   /^drizzle\.config\.json$/,
