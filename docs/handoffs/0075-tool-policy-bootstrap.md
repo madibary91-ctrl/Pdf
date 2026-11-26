@@ -1,0 +1,46 @@
+# یادداشت تحویل ۰۰۷۵ — `tool-policy-bootstrap`: اتصالِ میزبانِ سیاستِ ابزار به برنامه (CT‑5c‑2c‑2b‑3b)
+
+**کامیت پایه:** `68b8133` (`main`؛ تحویل ۰۰۷۴). مخزن: `madibary91-ctrl/Pdf`. به مخزن پوش **نکرده‌ام** (اعتبارنامهٔ نوشتن ندارم)؛ پچ‌ها و bundle در Gofile (پیوند و SHA-256 در متنِ پاسخِ تحویل).
+تگِ پیش‌ازریسک: `pre-risk/20261219-tool-policy-bootstrap` (حاشیه‌دار، روی `68b8133`، **پیش از اولین ویرایش**). کامیت‌ها: `feat(tool-policy-bootstrap)` (ماژول + گلو + اجارهٔ استخر + خروجِ هماهنگ + مسیرها + آزمون‌ها + ADR‑0076/task 0073/README/registry/ریسک/known-pitfalls + اسکریپتِ جهش)، `chore(ci)` (کف 8343 → 8575؛ `Risk-Tag`)، و همین یادداشت.
+
+## ۱) چرا این برش (تصمیم من) و سازمان‌دهیِ نوبت
+از «گام بعد»ِ ۰۰۷۴ (اتصال به برنامه، 2b‑2، CLIِ مهاجرت، `identity`، …) اتصالِ میزبان را برداشتم: بدونِ آن، `tool-policy-host` هیچ فرایندی ندارد که بسازدش و هیچ پروبِ K8s نیست؛ 2b‑2 (وصلِ سیاست به دروازه) هم بدونِ ریشهٔ مشاهده‌پذیر خطرناک است (سیاستِ کهنه/بارگذاری‌نشده بی‌پروب دیده نمی‌شود). CLIِ مهاجرت به تصمیمِ نقشِ پایگاه می‌خورد.
+**ترتیب:** کلون ← خواندنِ ۰۰۷۴/ADR‑0075 و `settlement-bootstrap` (الگو) و گلوی موجود ← تگ ← ماژول ← گلو ← آزمون (واحد/یکپارچه/PG واقعی) ← جهش‌آزمایی ← مستند ← `tsc`/`eslint` ← **دروازهٔ کامل** ← کف ← کامیت ← پچ/bundle ← اثباتِ پچ روی کلونِ تازه.
+
+## ۲) چه ساخته شد (فقط افزودن، جز دو تغییرِ کوچکِ گلو)
+- `src/modules/tool-policy-bootstrap/` (لایهٔ ۹، `humanReview:true`، `dependsOn:[tool-policy-host, tool-policy-runtime, settlement-host, settlement-runtime]`): `startToolPolicyBootstrap`، `parseBootstrapEnv`، `probeHttpResponse`، `TOOL_POLICY_BOOTSTRAP_ENV`. پنج فایلِ منبع (`bootstrap/env/http/index/types`) — بی‌`process`/`globalThis`/`console`/`Date`/`@/db`.
+- **env (ADR‑0076 بند ۲):** `TOOL_POLICY_HOST` فقط `on|off` (پیش‌فرض خاموش)؛ با `on` **هر پنج عددِ tuning الزامی و بی‌پیش‌فرض** (پنجرهٔ تازگی تصمیمِ مالک است)؛ کلیدِ ناشناختهٔ `TOOL_POLICY_*` خطا؛ بازه/رابطه را فقط ریشه می‌سنجد.
+- **پروب‌ها:** `/api/health/policy/{live,startup,ready}`؛ هر پاسخِ ناهمسازِ میزبان (کدِ وضعیتِ غیرِ ۲۰۰/۵۰۳، `ok` ناسازگار با کد، `state`/`reason` بدنوع، پرتاب) ⇒ ۵۰۳ `{ok:false}`؛ هیچ مسیری از «نمی‌دانم» به ۲۰۰ نیست.
+- **`OpenedDatabase.release` (اختیاری):** شکستِ بوت اجاره را بی‌بستنِ استخرِ مشترک پس می‌دهد؛ `close` فقط در `closeResources` پس از توقفِ تمیز.
+- **گلو (مسیرهای پرریسکِ `src/`):** `src/instrumentation-policy.ts`، `src/instrumentation-shared.ts`، `src/db/pool-lease.ts` (اجارهٔ شمارشیِ استخر)، `src/process-exit.ts` (خروجِ هماهنگ). دو ویرایشِ فایل‌های موجود: `src/instrumentation.ts` (فراخوانیِ سیاست پس از تسویه در `try/catch`) و `src/instrumentation-node.ts` (`openDatabase`/`exit` اکنون از `instrumentation-shared`).
+- **چرا اجاره و خروجِ هماهنگ (یافتهٔ طراحی، ADR‑0076 بند ۶–۷):** با هر دو میزبان روشن (الف) هر دو `pool.end()` می‌زنند ⇒ دومی `Called end on pool more than once` ⇒ `closed:"failed"` ⇒ `exit(1)` یا استخر زیرِ پای دیگری بسته می‌شود؛ (ب) هر دو روی SIGTERM `exit` می‌زنند و اولی خاموشیِ دومی را نیمه‌کاره می‌کُشد؛ (ج) شکستِ بوتِ سیاست با `close()` استخرِ وبِ اصلی (و `/api/health`) را می‌بست. هر سه با آزمون ثابت شد (از جمله دو میزبانِ **واقعی** در هر دو ترتیبِ پایان و استخرِ pg واقعی).
+- registry (یک سطر)، `HIGH_RISK_MODULES` + مسیرِ `src/process-exit.ts` در `git-discipline.ts`، `docs/high-risk-areas.md`، `docs/known-pitfalls.md` (یک سطر)، ADR‑0076، task 0073، README، `tooling/mutation/tool-policy-bootstrap.py` (۷۰ جهش).
+- **۲۳۲ آزمونِ تازه** (۱۶۸ + ۲۰ + ۱۴ + ۴ + ۷ + ۷ + ۷ + ۵؛ کف 8343 → **8575**): ماژول ۱۶۸ (`env` ۷۴، `bootstrap` ۵۰، `http` ۳۶، `purity` ۸)؛ گلو: `pool-lease` ۲۰، `process-exit` ۱۴، `instrumentation-shared` ۴، `instrumentation-policy` ۷، `instrumentation.policy` ۷، مسیرها ۷؛ و **۵ آزمونِ PostgreSQL واقعی** (`tooling/tool-policy-bootstrap.pg.test.ts`: سالم ⇒ ready/خاموشیِ مرتب و بی‌نوشتن؛ مهاجرت‌نشده ⇒ `NOT_MIGRATED` بی‌بازتلاش حتی با `BOOT_ATTEMPTS=5` و بی‌جدول؛ SIGTERMِ ساختگی با صاحبِ `host` ⇒ `close` یک بار ⇒ `exit(0)`؛ استخرِ واقعی: شکستِ بوت استخر را نمی‌بندد؛ دو اجاره‌دار ⇒ فقط آخری می‌بندد).
+
+## ۳) تغییر در تست‌های موجود
+**هیچ.** `Test-Change-Approved` لازم نبود. فقط افزودنِ فایل؛ فایل‌های موجودِ تغییرکرده: `registry.ts` (یک سطر)، `git-discipline.ts` (یک عنصر در `HIGH_RISK_MODULES` و یک regex در `HIGH_RISK`)، `ci-tests.ts` (فقط `MIN_PASSED_TESTS`)، `instrumentation.ts`، `instrumentation-node.ts` و سه سند. آزمون‌های موجودِ گلو (`instrumentation.test.ts`، `instrumentation-node.test.ts`، `app/api/health/probes.test.ts`) بی‌تغییر سبزند — به همین دلیل سیاست در فایلِ جدا (`instrumentation-policy.ts`) است، نه export تازه در `instrumentation-node.ts` (mockِ آزمونِ موجود آن را نمی‌شناسد).
+
+## ۴) راستی‌آزمایی و یافته‌های واقعی
+1. **جهش‌آزمایی: ۷۰ جهش، هیچ بازمانده‌ای نیست** (اجرای اول؛ پیش‌تر یک آزمونِ نام‌بلند را ۱۰۰ → ۳۰۰ نویسه سخت کردم چون با ۱۰۰ جهشِ «کوتاه‌نکردنِ نام» زنده می‌ماند؛ اجرای نهایی روی همان نسخه).
+2. **یک باگِ واقعی را آزمونِ خودم گرفت:** `pool-lease` اولیه `void p.end()` داشت ⇒ رد شدنِ ناهمگامِ `end()` بلعیده و `unhandledRejection` می‌شد. اکنون به `close` می‌رسد (آزمون + جهشِ اختصاصی).
+3. **دروازهٔ کامل `node tooling/ci-tests.ts`** (PG محلی، Node 22، Linux): اجرای دوم و نهایی **۳۴۰ فایل، ۸۵۷۵ سبز، ۰ شکست، ۰ ردشده، ۱۶ todo**. `tsc --noEmit` و ESLint روی فایل‌های تازه/تغییرکرده تمیز. «CI گیت‌هاب سبز» را ادعا نمی‌کنم (CI را نمی‌بینم). `ERR_IPC_CHANNEL_CLOSED`/`gate-floor`/`schema-ensure-key-parity` ویندوز طبق دستور دست‌نخورده.
+4. **اجرای اولِ دروازه دو شکست داشت؛ هر دو را صادقانه ثبت می‌کنم:** (الف) `git-discipline.test.ts` — `docs/high-risk-areas.md` مسیرِ `src/process-exit.ts` را نام برده بود ولی در `HIGH_RISK` نبود: **خطای خودم**، با افزودنِ regex رفع شد (آزمونِ همگامیِ موجود دقیقاً برای همین است)؛ (ب) `settlement-pending-migrate/down.pg.test.ts` («سه دورِ down‖up‖down»، `42P01` در فازِ `check`) — این فایل سه بار تنها سبز شد و در اجرای دومِ کاملِ دروازه هم سبز بود؛ **علتِ شکستِ یک‌باره را تشخیص ندادم** (ماژول‌های من به آن دست نمی‌زنند و در شِمای جدا کار می‌کنند؛ ولی «ناوابسته» را اثبات نکرده‌ام). اگر CI لینوکس آن را دوباره قرمز کرد، مشکوکِ نخست رقابتِ فایل‌های PGِ هم‌زمان روی یک پایگاه است.
+5. **اشتباهِ دیگر، پیش از کامیت:** دو جدولِ `it.each` در `bootstrap.test.ts` خطای `TS7023` (نوعِ ضمنی) داشت و `tsc` گرفت؛ با نوع‌دهیِ صریح رفع شد. `registry.ts` را بار دیگر با اسکریپتِ پایتون با escape دوبل شکستم (همان لغزشِ ۰۰۷۴)؛ `tsc` فوراً گرفت و پیش از کامیت رفع شد. هیچ کامیتِ قرمزی ساخته نشد.
+6. **`check-range 68b8133..HEAD`** و اثباتِ پچ (G13) روی کلونِ تازه: نتیجه (hash درخت، `tsc`، دروازه) در متنِ پاسخ.
+
+## ۵) انحراف‌ها و محدودیت‌های صادقانه
+1. **به دروازهٔ ابزار وصل نیست:** `TOOL_POLICY_HOST=on` فقط سلامت/تازگیِ سیاست را مشاهده‌پذیر می‌کند (2b‑2 جداست). بازبینیِ انسانیِ مالکِ امنیت (`env.ts`، `bootstrap.ts`، `http.ts`، `pool-lease.ts`، `process-exit.ts`) انجام نشده.
+2. **یافتهٔ باز در ماژولِ موجود (دست‌نخورده):** `settlement-bootstrap` در مسیرهای شکستِ بوت `opened.close()` می‌زند؛ با اجارهٔ شمارشی، اگر تنها اجاره‌دار باشد، استخرِ برنامه (و `/api/health`) بسته می‌شود — همان رفتارِ ADR‑0033. و اگر تسویه زودتر شکست بخورد و استخر ببندد، `openSharedDatabase` سیاست `POOL_ENDED` می‌پرتابد ⇒ `DATABASE_UNAVAILABLE` (شکست‌بسته، نه استخرِ بسته‌شده). اصلاح (افزودنِ `release` به تسویه) کارِ جداست؛ ماژولِ پول را بی‌دستور عوض نکردم.
+3. **`connectionTimeoutMillis` استخر تنظیم نشد** (`src/db/index.ts` فایلِ scaffold است و بر همهٔ مصرف‌کننده‌ها اثر دارد). تلاشِ تازه‌سازی با `attemptDeadlineMs` رها می‌شود، ولی اتصالِ معلقِ استخر تا رفعِ آن می‌ماند.
+4. **خروجِ هماهنگ فقط هم‌تای `stopping` را منتظر می‌گذارد** (idle/failed/running نه)؛ مدلِ ذهنی: هر دو میزبان با یک SIGTERM هم‌زمان `stopping` می‌شوند. خاموشیِ دستیِ فقط‌یکی از دو میزبان (بی‌سیگنال) `exit` نمی‌زند. این‌ها با مدلِ فعلی سازگارند ولی با «`next` صاحبِ خروج» (پیش‌فرض) بی‌اثرند.
+5. **دودیِ فرایندِ واقعی** (`next start` + PG + SIGTERM) برای سیاست ننوشتم (الگوی `tooling/smoke/settlement-next.mjs` هست؛ هزینهٔ زمانی)؛ «بستنِ استخر زیرِ Next ۱۶ که خودش `process.exit` می‌زند» تضمین نیست (همان محدودیتِ ۰۰۷۴).
+6. هوک‌های گیت نصب نشد؛ `check-range` دستی. موارد بازِ ۰۰۴۶–۰۰۷۴ و تصمیم‌های معلق **دست‌نخورده**.
+
+## تأیید لازم از شما
+۱) کفِ 8575 پس از دیدنِ CI لینوکس (و وضعیتِ `settlement-pending-migrate/down.pg.test.ts`)؛ ۲) ADR‑0076 به‌ویژه بند ۲ (پنج عددِ tuning الزامی و بی‌پیش‌فرض — شاید بخواهید مقدارِ پیش‌فرضِ محصول را خودتان تعیین کنید)، بند ۵ (`release`) و بند ۶–۷ (اجارهٔ استخر، خروجِ هماهنگ)؛ ۳) بازبینیِ انسانیِ مالکِ امنیت؛ ۴) تصمیمِ اصلاحِ `close`-در-شکستِ `settlement-bootstrap`؛ ۵) همچنان معلق از ۰۰۷۰: `Test-Change-Approved` برای `9f3ff8b`.
+
+## گام بعد (تصمیم من)
+۱) **CT‑5c‑2c‑2b‑2:** سیم‌کشیِ `snapshot().projection` به زنجیرهٔ دروازه (حالا که ریشه مشاهده‌پذیر است)، `requestId`، `version` در لاگِ رزرو. ۲) دودیِ `next start` برای هر دو میزبان (SIGTERM، دو اجاره، خروجِ هماهنگ). ۳) `release` برای `settlement-bootstrap` (با تأییدِ شما). ۴) 2c‑3: CLIِ `migrate/status` سیاست + نقشِ مهاجرتِ جدا + مهلتِ `migrate()` + `connectionTimeoutMillis`. ۵) `identity`. ۶) `LATE_AFTER_CLOSE`/مغایرت‌گیری. ۷) استخراجِ تسویهٔ مشترک و نوع‌های فرایندیِ مشترک. ۸) `Answer.reviewPending`. ۹) تطبیقِ عدد. ۱۰) CT‑3c‑2.
+
+## پچ‌ها
+`git format-patch 68b8133..HEAD` (سه پچ) + bundle (تگ `pre-risk/20261219-tool-policy-bootstrap`) در Gofile (`SHA256SUMS` کنار پچ‌ها). اعمال: `git checkout 68b8133 && git am /path/000*.patch`، یا `git pull <bundle> main`. `git am` هوک‌ها را اجرا نمی‌کند.
