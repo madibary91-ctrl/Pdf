@@ -192,6 +192,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "tool-policy-admin",
   "tool-policy-store-pg",
   "tool-policy-source",
+  "tool-policy-refresher",
   "durable-tool-gateway",
   "doc-templates-core",
   "legal-kb-ingest",
