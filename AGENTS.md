@@ -21,6 +21,7 @@ npx tsc --noEmit               # تایپ
 npm run build                  # ساخت
 node tooling/git-discipline.ts install   # یک‌بار پس از کلون: فعال‌سازی هوک‌های انضباط گیت
 npm run backlog:cost -- --format=text   # هزینهٔ خواندنِ پایشِ پسماند (پایگاهِ غیرتولیدی؛ ADR-0044)
+DATABASE_URL=… npm run policy:migrate -- status   # مهاجرتِ شِمای سیاستِ ابزار با نقشِ مهاجرتِ جدا؛ `up --create-schema` شِما را فقط با فلگِ صریح می‌سازد (ADR-0080)
 ```
 
 ## قواعد (خلاصه؛ جزئیات در ADR-0001)
