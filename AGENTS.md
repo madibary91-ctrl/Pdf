@@ -25,6 +25,7 @@ DATABASE_URL=… npm run policy:migrate -- status   # مهاجرتِ شِمای 
 DATABASE_URL=… npm run policy:grants -- verify --role=NAME   # حقوقِ نقشِ زمانِ اجرای سیاستِ ابزار (کمترین امتیاز)؛ `plan` بی‌اتصال دستورها را چاپ می‌کند و `apply` همگرا می‌کند و دوباره می‌خواند (ADR-0081)
 # ترتیبِ استقرارِ نقش‌ها (migrate ← CREATE ROLE ← grants apply ← grants verify ← برنامه) و عیب‌یابیِ میزبان: docs/runbooks/tool-policy-roles.md (ADR-0082)
 POLICY_DATABASE_URL=…   # (اختیاری) رشتهٔ اتصالِ نقشِ زمانِ اجرا فقط برای میزبانِ سیاستِ ابزار؛ نبود ⇒ استخرِ مشترکِ امروز؛ نامعتبر ⇒ شکست‌بسته، هرگز بازگشت به استخرِ مشترک (ADR-0083)
+# هر استخرِ `pg` باید شنوندهٔ `error` داشته باشد (وگرنه قطعِ اتصال فرایند را می‌اندازد): استخرِ مشترکِ `@/db` از `installPoolErrorGuard` (`src/db/pool-error-guard.ts`) استفاده می‌کند؛ لاگ فقط `{scope:"db",type:"db.pool.error",code}` (ADR-0084)
 ```
 
 ## قواعد (خلاصه؛ جزئیات در ADR-0001)
