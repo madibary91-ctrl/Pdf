@@ -193,6 +193,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "tool-policy-store-pg",
   "tool-policy-source",
   "tool-policy-binding",
+  "tool-policy-preflight",
   "tool-policy-refresher",
   "tool-policy-runtime",
   "tool-policy-host",
