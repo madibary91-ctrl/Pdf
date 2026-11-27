@@ -195,6 +195,7 @@ export const HIGH_RISK_MODULES: readonly string[] = [
   "tool-policy-binding",
   "tool-policy-preflight",
   "tool-policy-migrate",
+  "tool-policy-grants",
   "tool-policy-refresher",
   "tool-policy-runtime",
   "tool-policy-host",

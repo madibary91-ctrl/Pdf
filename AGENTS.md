@@ -22,6 +22,7 @@ npm run build                  # ساخت
 node tooling/git-discipline.ts install   # یک‌بار پس از کلون: فعال‌سازی هوک‌های انضباط گیت
 npm run backlog:cost -- --format=text   # هزینهٔ خواندنِ پایشِ پسماند (پایگاهِ غیرتولیدی؛ ADR-0044)
 DATABASE_URL=… npm run policy:migrate -- status   # مهاجرتِ شِمای سیاستِ ابزار با نقشِ مهاجرتِ جدا؛ `up --create-schema` شِما را فقط با فلگِ صریح می‌سازد (ADR-0080)
+DATABASE_URL=… npm run policy:grants -- verify --role=NAME   # حقوقِ نقشِ زمانِ اجرای سیاستِ ابزار (کمترین امتیاز)؛ `plan` بی‌اتصال دستورها را چاپ می‌کند و `apply` همگرا می‌کند و دوباره می‌خواند (ADR-0081)
 ```
 
 ## قواعد (خلاصه؛ جزئیات در ADR-0001)
