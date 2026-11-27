@@ -6,6 +6,7 @@
  */
 import { startToolPolicyBootstrap } from "@/modules/tool-policy-bootstrap";
 import type { BootstrapEvent } from "@/modules/tool-policy-bootstrap";
+import { selectPolicyDatabaseOpener } from "./instrumentation-policy-db";
 import { openSharedDatabase, sharedExit } from "./instrumentation-shared";
 
 export async function registerToolPolicy(): Promise<void> {
@@ -14,7 +15,12 @@ export async function registerToolPolicy(): Promise<void> {
     store: globalThis,
     processOwner: process.env.NEXT_MANUAL_SIG_HANDLE ? "host" : "next",
     exit: sharedExit,
-    openDatabase: openSharedDatabase,
+    // `POLICY_DATABASE_URL` نبود ⇒ همان `openSharedDatabase`؛ بود ⇒ استخرِ اختصاصیِ کمترینِ امتیاز (ADR-0083).
+    openDatabase: selectPolicyDatabaseOpener({
+      env: process.env,
+      shared: openSharedDatabase,
+      log: (event) => console.log(JSON.stringify({ scope: "tool-policy", ...event })),
+    }),
     log: (event: BootstrapEvent) => console.log(JSON.stringify({ scope: "tool-policy", ...event })),
   });
 }
